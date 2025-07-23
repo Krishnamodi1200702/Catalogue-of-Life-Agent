@@ -96,7 +96,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 await process.log("Using GPT to convert natural language to Catalogue of Life API parameters")
                 
                 taxon: TaxonModel = await instructor_client.chat.completions.create(
-                    model="gpt-3.5-turbo",
+                    model="gpt-4o",
                     response_model=TaxonModel,
                     messages=[
                         {"role": "system",

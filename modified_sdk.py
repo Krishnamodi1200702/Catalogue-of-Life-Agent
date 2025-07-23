@@ -64,19 +64,19 @@ class CatalogueOfLifeAgent(IChatBioAgent):
     
     @override
     def get_agent_card(self) -> AgentCard:
-        # Railway URL detection - ONLY CHANGE #1
+        # Railway URL detection
         railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
         if railway_domain:
             agent_url = f"https://{railway_domain}"
         else:
-            port = int(os.environ.get("PORT", 3000))  # ONLY CHANGE #2
+            port = int(os.environ.get("PORT", 3000))
             agent_url = f"http://localhost:{port}"
             
         return AgentCard(
             name="Catalogue of Life",
             description="Retrieves comprehensive taxonomic and species data from the Catalogue of Life database.",
             icon=None,
-            url=agent_url,  # ONLY CHANGE #3
+            url=agent_url,
             entrypoints=[
                 AgentEntrypoint(
                     id="get_taxonomic_data",
@@ -96,23 +96,40 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 # Log the initial step
                 await process.log("Analyzing user query and extracting taxonomic search parameters")
                 
-                # Set up OpenAI client for parameter extraction
-                openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+                # Set up OpenAI client for parameter extraction with Navigator AI
+                openai_client = AsyncOpenAI(
+                    api_key=os.getenv("OPENAI_API_KEY"),
+                    base_url=os.getenv("OPENAI_BASE_URL")  # Navigator AI endpoint
+                )
                 instructor_client = instructor.patch(openai_client)
 
                 # Extract structured query parameters from user request
-                await process.log("Using GPT to convert natural language to Catalogue of Life API parameters")
+                await process.log("Using Navigator AI to convert natural language to Catalogue of Life API parameters")
                 
-                taxon: TaxonModel = await instructor_client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    response_model=TaxonModel,
-                    messages=[
-                        {"role": "system",
-                         "content": "You translate user requests into Catalogue of Life API parameters for taxonomic searches. Focus on extracting scientific names, common names, or taxonomic groups."},
-                        {"role": "user", "content": request}
-                    ],
-                    max_retries=3
-                )
+                # Try gpt-4o first, fallback to gpt-3.5-turbo if needed
+                try:
+                    taxon: TaxonModel = await instructor_client.chat.completions.create(
+                        model="gpt-4o",  # Use supported Navigator AI model
+                        response_model=TaxonModel,
+                        messages=[
+                            {"role": "system",
+                             "content": "You translate user requests into Catalogue of Life API parameters for taxonomic searches. Focus on extracting scientific names, common names, or taxonomic groups."},
+                            {"role": "user", "content": request}
+                        ],
+                        max_retries=3
+                    )
+                except Exception as model_error:
+                    await process.log(f"gpt-4o failed, trying gpt-3.5-turbo: {model_error}")
+                    taxon: TaxonModel = await instructor_client.chat.completions.create(
+                        model="gpt-3.5-turbo",
+                        response_model=TaxonModel,
+                        messages=[
+                            {"role": "system",
+                             "content": "You translate user requests into Catalogue of Life API parameters for taxonomic searches. Focus on extracting scientific names, common names, or taxonomic groups."},
+                            {"role": "user", "content": request}
+                        ],
+                        max_retries=3
+                    )
 
                 # Build the API URL
                 api_url = taxon.to_url(params.format if params else "json")
@@ -158,19 +175,20 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                         "total_taxa_found": total_results,
                         "search_term": taxon.search_term,
                         "taxonomic_rank": taxon.rank,
-                        "source": "Catalogue of Life ChecklistBank API"
+                        "source": "Catalogue of Life ChecklistBank API",
+                        "ai_service": "Navigator AI (UF)"
                     }
                 )
                 
                 # Generate summary for the user
-                await process.log("Generating human-readable summary")
+                await process.log("Generating human-readable summary with Navigator AI")
                 
-                summary_text = self._generate_summary(structured_data, taxon, total_results)
+                summary_text = await self._generate_summary_with_ai(instructor_client, structured_data, taxon, total_results)
                 
                 await process.log("Taxonomic search completed successfully")
 
             except InstructorRetryException as e:
-                await process.log("Failed to process taxonomic query with GPT")
+                await process.log("Failed to process taxonomic query with Navigator AI")
                 await context.reply("Sorry, I couldn't process your taxonomic query. Please try rephrasing your request.")
                 return
             except Exception as e:
@@ -237,8 +255,51 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             "taxonomic_data": processed_results
         }
 
-    def _generate_summary(self, data: dict, query: TaxonModel, total_results: int) -> str:
-        """Generate a human-readable summary of the taxonomic search results."""
+    async def _generate_summary_with_ai(self, instructor_client, data: dict, query: TaxonModel, total_results: int) -> str:
+        """Generate an AI-powered summary of the taxonomic search results using Navigator AI."""
+        try:
+            results = data.get("taxonomic_data", [])
+            search_term = query.search_term or "your query"
+            
+            if not results:
+                return f"No taxonomic entries found for '{search_term}' in the Catalogue of Life database."
+            
+            # Create a prompt for AI summary generation
+            summary_prompt = f"""
+            Create a concise, informative summary of these Catalogue of Life taxonomic search results for '{search_term}'. 
+            Include key findings, taxonomic classifications, and any notable patterns. Keep it under 150 words and make it accessible to scientists.
+            
+            Search Results Data:
+            Total found: {total_results}
+            Primary results: {json.dumps(results[:3], indent=2)}
+            """
+            
+            # Try gpt-4o first, fallback to gpt-3.5-turbo
+            try:
+                response = await instructor_client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {"role": "system", "content": "You are a taxonomic expert summarizing Catalogue of Life search results. Be concise, accurate, and scientific."},
+                        {"role": "user", "content": summary_prompt}
+                    ]
+                )
+            except Exception:
+                response = await instructor_client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "system", "content": "You are a taxonomic expert summarizing Catalogue of Life search results. Be concise, accurate, and scientific."},
+                        {"role": "user", "content": summary_prompt}
+                    ]
+                )
+            
+            return response.choices[0].message.content.strip()
+            
+        except Exception as e:
+            # Fallback to basic summary if AI fails
+            return self._generate_basic_summary(data, query, total_results)
+
+    def _generate_basic_summary(self, data: dict, query: TaxonModel, total_results: int) -> str:
+        """Generate a basic summary without AI as fallback."""
         results = data.get("taxonomic_data", [])
         search_term = query.search_term or "your query"
         
@@ -261,17 +322,6 @@ class CatalogueOfLifeAgent(IChatBioAgent):
         else:
             summary += "This is an accepted taxonomic name.\n"
         
-        # Explain classification if available
-        if primary_result.get("classification"):
-            classification = primary_result["classification"]
-            hierarchy_parts = []
-            for rank_name in ['kingdom', 'phylum', 'class', 'order', 'family', 'genus']:
-                if rank_name in classification:
-                    hierarchy_parts.append(f"{rank_name.title()}: {classification[rank_name]}")
-            
-            if hierarchy_parts:
-                summary += f"Taxonomic placement: {' | '.join(hierarchy_parts[:3])}\n"
-        
         # Additional context for multiple results
         if len(results) > 1:
             summary += f"\nThe search returned {len(results)} related taxonomic entries, which may include different taxonomic ranks, synonyms, or homonyms.\n"
@@ -284,13 +334,14 @@ class CatalogueOfLifeAgent(IChatBioAgent):
 if __name__ == "__main__":
     from ichatbio.server import run_agent_server
     
-    # ONLY CHANGE #4 - Railway port detection
+    # Railway port detection
     port = int(os.environ.get("PORT", 3000))
     
     agent = CatalogueOfLifeAgent()
-    print("Starting Catalogue of Life Agent (New SDK)...")
+    print("Starting Catalogue of Life Agent with Navigator AI...")
+    print(f"Using AI endpoint: {os.getenv('OPENAI_BASE_URL', 'default OpenAI')}")
     print(f"Agent card: http://localhost:{port}/.well-known/agent.json")
     print("Press Ctrl+C to stop")
     
-    # ONLY CHANGE #5 - Accept external connections
+    # Accept external connections
     run_agent_server(agent, host="0.0.0.0", port=port)

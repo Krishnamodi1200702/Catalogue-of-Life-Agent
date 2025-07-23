@@ -12,7 +12,10 @@ load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # patching OpenAI client with Instructor to use response models
-client = patch(openai.OpenAI())
+client = patch(openai.OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY"),
+    base_url=os.getenv("OPENAI_BASE_URL")
+))
 
 # data model to hold search parameters extracted from the query
 class CoLQueryParams(BaseModel):
@@ -48,7 +51,7 @@ Return a JSON object with:
 
 # get structured params from the user message
 query_params = client.chat.completions.create(
-    model="gpt-4",
+    model="gpt-4o",
     messages=[
         {"role": "system", "content": query_instructions},
         {"role": "user", "content": user_message}
@@ -114,14 +117,14 @@ Data:
 
 # GPT generates a readable human summary of the results
 summary_response = client.chat.completions.create(
-    model="gpt-4",
+    model="gpt-4o",
     messages=[
         {"role": "user", "content": summary_prompt}
     ]
 )
 
 # printing everything nicely
-print("\n Structured Catalogue of Life Results")
+print("\nStructured Catalogue of Life Results")
 print("Total matching records:", structured_response.total)
 print("Query URL:", structured_response.query_url)
 print("Results:")
@@ -132,7 +135,7 @@ for i, result in enumerate(structured_response.results, 1):
     print(f"{i}. {result.scientificName} ({result.rank}) - {result.link or 'No link'}{accepted}{classification}")
 
 # printing GPT generated summary
-print("\n GPT Summary:")
+print("\nGPT Summary:")
 print(summary_response.choices[0].message.content.strip())
 print("\n")
 
