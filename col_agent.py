@@ -105,25 +105,7 @@ structured_response = ColResponse(
     total=total
 )
 
-# sending all result data to GPT to generate a <100-word summary
-summary_prompt = f"""
-Summarize these species search results based on Catalogue of Life in under 100 words.
-Be concise, informative, and highlight any patterns or notable classifications.
-Only include factual insights from the data provided below.
-
-Data:
-{structured_response.model_dump_json(indent=2)}
-"""
-
-# GPT generates a readable human summary of the results
-summary_response = client.chat.completions.create(
-    model="gpt-4o",
-    messages=[
-        {"role": "user", "content": summary_prompt}
-    ]
-)
-
-# printing everything nicely
+# printing results without GPT summary
 print("\nStructured Catalogue of Life Results")
 print("Total matching records:", structured_response.total)
 print("Query URL:", structured_response.query_url)
@@ -133,11 +115,6 @@ for i, result in enumerate(structured_response.results, 1):
     classification = f" | Classification: {' > '.join(result.classification)}" if result.classification else ""
     accepted = f" (Accepted name: {result.acceptedName})" if result.acceptedName else ""
     print(f"{i}. {result.scientificName} ({result.rank}) - {result.link or 'No link'}{accepted}{classification}")
-
-# printing GPT generated summary
-print("\nGPT Summary:")
-print(summary_response.choices[0].message.content.strip())
-print("\n")
 
 # saving results as JSON
 if structured_response.total > 0:
