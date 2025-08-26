@@ -67,7 +67,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             name="Catalogue of Life Taxonomic Search",
             description="Retrieves comprehensive taxonomic and species data from the Catalogue of Life database using natural language queries.",
             icon=None,
-            url="http://localhost:3000",
+            url="http://localhost:9999",
             entrypoints=[
                 AgentEntrypoint(
                     id="get_taxonomic_data",
@@ -345,4 +345,4 @@ if __name__ == "__main__":
     print("Agent card available at: http://localhost:3000/.well-known/agent.json")
     print("Press Ctrl+C to stop the server")
     
-    run_agent_server(agent, host="0.0.0.0", port=3000)
+    run_agent_server(agent, host="0.0.0.0", port=9999)
