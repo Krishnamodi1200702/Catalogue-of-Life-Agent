@@ -7,7 +7,7 @@ import dotenv
 import instructor
 import requests
 from openai import AsyncOpenAI
-from pydantic import BaseModel, HttpUrl, Field
+from pydantic import BaseModel, Field
 
 from ichatbio.agent import IChatBioAgent
 from ichatbio.agent_response import ResponseContext, IChatBioAgentProcess
@@ -15,6 +15,10 @@ from ichatbio.types import AgentCard, AgentEntrypoint
 
 # Load environment variables
 dotenv.load_dotenv()
+
+# Parameters for the agent entrypoint - this needs to be simpler
+class SearchParameters(BaseModel):
+    format: str = Field(default="detailed", description="Response format")
 
 # Data model to hold search parameters extracted from the query
 class CoLQueryParams(BaseModel):
@@ -36,10 +40,6 @@ class ColResponse(BaseModel):
     query_url: str
     total: int
 
-# Parameters for the agent entrypoint
-class ColAgentParameters(BaseModel):
-    format: str = Field(default="detailed", description="Response format: 'detailed' or 'summary'")
-
 class CatalogueOfLifeAgent(IChatBioAgent):
     
     @override
@@ -48,18 +48,23 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             name="Catalogue of Life Agent",
             description="Search and retrieve taxonomic information from the Catalogue of Life database using natural language queries.",
             icon=None,
-            url="http://localhost:9999",
+            url="http://98.86.185.12:9999",  # Use your actual public IP
             entrypoints=[
                 AgentEntrypoint(
                     id="search_taxonomy",
                     description="Search for species, genera, or taxonomic information",
-                    parameters=ColAgentParameters
+                    parameters=SearchParameters
                 )
             ]
         )
 
     @override
-    async def run(self, context: ResponseContext, request: str, entrypoint: str, params: Optional[ColAgentParameters]):
+    async def run(self, context: ResponseContext, request: str, entrypoint: str, params: Optional[SearchParameters]):
+        # Validate entrypoint
+        if entrypoint != "search_taxonomy":
+            await context.reply(f"Unknown entrypoint: {entrypoint}")
+            return
+
         async with context.begin_process(summary="Searching Catalogue of Life") as process:
             process: IChatBioAgentProcess
             
@@ -67,7 +72,10 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 await process.log("Starting taxonomic search process")
                 
                 # Set up OpenAI client with instructor
-                openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+                openai_client = AsyncOpenAI(
+                    api_key=os.getenv("OPENAI_API_KEY"),
+                    base_url=os.getenv("OPENAI_BASE_URL")
+                )
                 instructor_client = instructor.patch(openai_client)
                 
                 await process.log("Extracting search parameters from user query using GPT")
@@ -107,7 +115,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 await process.log(f"Querying Catalogue of Life API: {col_base_url}")
                 
                 # Make the API request
-                response = requests.get(col_base_url, params=api_params)
+                response = requests.get(col_base_url, params=api_params, timeout=30)
                 query_url = response.url
                 
                 await process.log(f"API request completed with status code: {response.status_code}")
@@ -228,9 +236,9 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             
             summary += f"{i}. **{result.scientificName}** ({result.rank}){accepted_info}\n"
             if result.link:
-                summary += f"   🔗 [View on CoL]({result.link})\n"
+                summary += f"   Link: {result.link}\n"
             if classification_info:
-                summary += f"   📊{classification_info}\n"
+                summary += f"   {classification_info}\n"
             summary += "\n"
         
         if len(response.results) > 5:
@@ -238,7 +246,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
         
         summary += f"**Total found:** {response.total} records\n"
         summary += "**Source:** Catalogue of Life ChecklistBank API\n\n"
-        summary += "📁 **Detailed results** are available in the generated artifact above, including full classifications and metadata."
+        summary += "**Detailed results** are available in the generated artifact above, including full classifications and metadata."
         
         return summary
 
@@ -248,7 +256,7 @@ if __name__ == "__main__":
     
     agent = CatalogueOfLifeAgent()
     print("Starting Catalogue of Life Agent...")
-    print("Agent card available at: http://localhost:9999/.well-known/agent.json")
+    print("Agent card available at: http://98.86.185.12:9999/.well-known/agent.json")
     print("Press Ctrl+C to stop the server")
     
     run_agent_server(agent, host="0.0.0.0", port=9999)
