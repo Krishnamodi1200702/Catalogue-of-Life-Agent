@@ -56,7 +56,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             name="Catalogue of Life Agent",
             description="Search for species and taxonomic information from the Catalogue of Life database",
             icon=None,  # No icon for now to avoid timeout issues
-            url="http://localhost:29197",  # Use localhost for testing, change for production
+            url="http://localhost:9999",  # Use localhost for testing, change for production
             entrypoints=[
                 AgentEntrypoint(
                     id="search",
