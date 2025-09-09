@@ -9,7 +9,7 @@ except ImportError as e:
     sys.exit(1)
 
 try:
-    from col_agent import CatalogueOfLifeAgent
+    from src.col_agent import CatalogueOfLifeAgent
     print("col_agent imported successfully")
 except ImportError as e:
     print(f"Failed to import col_agent: {e}")
