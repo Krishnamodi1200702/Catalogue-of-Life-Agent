@@ -28,7 +28,7 @@ if __name__ == "__main__":
         print("Agent initialized")
         
         print("Starting server on 0.0.0.0:9999...")
-        run_agent_server(agent, host="0.0.0.0", port=9999)
+        run_agent_server(agent, host="0.0.0.0", port=29197)
     except Exception as e:
         print(f"Server failed to start: {e}")
         import traceback
