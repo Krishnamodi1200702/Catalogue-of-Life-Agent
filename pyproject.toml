@@ -1,0 +1,17 @@
+[project]
+name = "CoL"
+version = "0.1.0"
+description = "description"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ichatbio-sdk",
+    "a2a-sdk[sqlite]",
+    "python-dotenv",
+    "openai",
+    "instructor",
+    "pydantic",
+    "requests",
+    "sqlalchemy",
+    "aiosqlite",
+]
