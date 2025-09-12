@@ -210,35 +210,40 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                         rank = item.get("rank", "Unknown")
                         status = item.get("status", "Unknown")
                         
-                        # Handle classification
+                        # Handle classification - extract full taxonomic hierarchy
                         classification = item.get("classification", [])
-                        kingdom = None
-                        phylum = None
+                        taxonomy = {}
+                        
+                        # Define the standard ranks we want to show
+                        desired_ranks = ["domain", "kingdom", "phylum", "class", "order", "family", "genus", "species"]
                         
                         if classification:
                             for taxon in classification:
-                                if taxon.get("rank") == "kingdom":
-                                    kingdom = taxon.get("name")
-                                elif taxon.get("rank") == "phylum":
-                                    phylum = taxon.get("name")
+                                taxon_rank = taxon.get("rank", "").lower()
+                                taxon_name = taxon.get("name", "")
+                                if taxon_rank in desired_ranks and taxon_name:
+                                    taxonomy[taxon_rank] = taxon_name
                         
                         result_info = {
                             "scientificName": scientific_name,
                             "rank": rank,
                             "status": status,
-                            "kingdom": kingdom,
-                            "phylum": phylum
+                            "taxonomy": taxonomy  # Changed from individual kingdom/phylum to full taxonomy
                         }
                         formatted_results.append(result_info)
                         
-                        # Add to reply text
+                        # Add to reply text with full taxonomic lineage
                         reply_text += f"**{i}. {scientific_name}**\n"
                         reply_text += f"   • Rank: {rank}\n"
                         reply_text += f"   • Status: {status}\n"
-                        if kingdom:
-                            reply_text += f"   • Kingdom: {kingdom}\n"
-                        if phylum:
-                            reply_text += f"   • Phylum: {phylum}\n"
+                        
+                        # Show the complete taxonomic lineage
+                        if taxonomy:
+                            reply_text += f"   • **Taxonomic Lineage:**\n"
+                            for rank_name in desired_ranks:
+                                if rank_name in taxonomy:
+                                    reply_text += f"     - {rank_name.capitalize()}: {taxonomy[rank_name]}\n"
+                        
                         reply_text += "\n"
                         
                     except Exception as item_error:
