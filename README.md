@@ -1,13 +1,37 @@
 # Catalogue of Life Agent
 
-A taxonomic search agent for iChatBio that integrates with the Catalogue of Life database.
+The Catalogue of Life (COL) Agent is a Python-based AI agent for the iChatBio platform.
+It lets biodiversity researchers, educators, and enthusiasts query global species data using natural language. The agent extracts scientific names from user queries and fetches authoritative taxonomic information from the Catalogue of Life (COL) database.
 
-## Files
-- `col_standalone_agent.py` - Standalone interactive version
-- `col_agent_new_sdk.py` - iChatBio SDK integrated version
+## Tech Stack
 
-## Deployment
-Deployed on Railway for iChatBio beta integration.
+- Language: Python 3.10+
+- LLM Integration: OpenAI SDK
+- Structured Output: Instructor
+- Agent Framework: iChatBio Agent SDK
+- Data Modeling: Pydantic
+- Async API Calls: httpx
+- Configuration: python-dotenv
 
-## Environment Variables
-- `OPENAI_API_KEY`: Your OpenAI API key
+## Key Components
+- `COL_Agent` – Main agent class
+- `COLClient` – REST client to query COL API
+- `models.py` – Defines species, synonyms, classification, etc.
+
+## Setup & Run
+
+1. **Clone the repo**
+
+   ```bash
+   git clone https://github.com/Krishnamodi1200702/catalogue_of_life_agent.git
+   cd col_agent
+
+2. **Install Dependencies**
+
+   ```bash
+   pip install -r requirements.txt
+
+3. **Setup environment variables**
+   create a .env file and 
+   ```bash
+   
