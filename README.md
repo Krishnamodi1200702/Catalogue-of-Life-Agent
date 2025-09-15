@@ -1,7 +1,6 @@
 # Catalogue of Life Agent
 
-The Catalogue of Life (COL) Agent is a Python-based AI agent for the iChatBio platform.
-It lets biodiversity researchers, educators, and enthusiasts query global species data using natural language. The agent extracts scientific names from user queries and fetches authoritative taxonomic information from the Catalogue of Life (COL) database.
+The Catalogue of Life (COL) Agent is a Python-based AI agent for the iChatBio platform. It lets biodiversity researchers, educators, and enthusiasts query global species data using natural language. The agent extracts scientific names from user queries and fetches authoritative taxonomic information from the Catalogue of Life (COL) database.
 
 ## Tech Stack
 
@@ -32,6 +31,16 @@ It lets biodiversity researchers, educators, and enthusiasts query global specie
    pip install -r requirements.txt
 
 3. **Setup environment variables**
+   
    create a .env file and 
    ```bash
-   
+   OPENAI_API_KEY=your-openai-api-key
+
+4. **Run the agent**
+    
+   ```bash
+   python main.py
+
+## COL API Endpoints used
+
+- GET /nameusage/search?name={query}
