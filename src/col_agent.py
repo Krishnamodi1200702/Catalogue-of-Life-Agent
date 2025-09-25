@@ -1,7 +1,8 @@
 import os
 import json
 import traceback
-from typing import Optional, List, override
+from typing import Optional, List
+from typing_extensions import override
 from urllib.parse import urlencode
 
 import dotenv
