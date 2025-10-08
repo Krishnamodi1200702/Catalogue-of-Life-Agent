@@ -302,14 +302,17 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 
                 for i, item in enumerate(results[:5], 1):
                     try:
-                        print(f"DEBUG: Processing result {i}: {json.dumps(item, indent=2)[:200]}...")
+                        print(f"DEBUG: Processing result {i}...")
                         
-                        # STEP 8: Extract key information from each result
-                        scientific_name = item.get("scientificName", "Unknown")
-                        rank = item.get("rank", "Unknown")
-                        status = item.get("status", "Unknown")
+                        # CORRECTED: Extract from correct nested structure
+                        usage = item.get("usage", {})
+                        name_obj = usage.get("name", {})
                         
-                        # STEP 8: Extract and structure classification hierarchy
+                        scientific_name = name_obj.get("scientificName", "Unknown")
+                        rank = name_obj.get("rank", "Unknown")
+                        status = usage.get("status", "Unknown")
+                        
+                        # Extract classification hierarchy (already correct)
                         classification = item.get("classification", [])
                         taxonomy = {}
                         
