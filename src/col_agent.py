@@ -193,12 +193,13 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 print(f"DEBUG: API Params: {api_params}")
                 print(f"DEBUG: Full URL: {full_url}")
                 
-                # LOG 2: API Query
+                # LOG 2: API Query with full URL
                 await process.log(
                     "API Query",
                     data={
                         "endpoint": col_url,
-                        "parameters": api_params
+                        "parameters": api_params,
+                        "full_url": full_url
                     }
                 )
                 
@@ -322,38 +323,18 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 # ============================================================
                 print("DEBUG: Generating verbal summary...")
                 
-                # Build detailed reply text
-                reply_text = f"**Found {total} matches for '{query_params.search_term}' in Catalogue of Life:**\n\n"
+                # Build concise reply - just the key finding
+                # The detailed data is in the artifact
+                if len(formatted_results) == 1:
+                    main_result = formatted_results[0]
+                    reply_text = f"Found {main_result['scientificName']} ({main_result['rank']}, {main_result['status']}). "
+                elif len(formatted_results) > 1:
+                    reply_text = f"Found {total} matches for '{query_params.search_term}'. "
+                    reply_text += f"Top result: {formatted_results[0]['scientificName']} ({formatted_results[0]['rank']}). "
+                else:
+                    reply_text = f"Found {total} matches. "
                 
-                for i, result_info in enumerate(formatted_results, 1):
-                    scientific_name = result_info["scientificName"]
-                    rank = result_info["rank"]
-                    status = result_info["status"]
-                    taxonomy = result_info["taxonomy"]
-                    
-                    reply_text += f"**{i}. {scientific_name}**\n"
-                    reply_text += f"   - Rank: {rank}\n"
-                    reply_text += f"   - Status: {status}\n"
-                    
-                    # Show the complete taxonomic lineage
-                    if taxonomy:
-                        reply_text += f"   - **Taxonomic Lineage:**\n"
-                        for rank_name in ["domain", "kingdom", "phylum", "class", "order", "family", "genus", "species"]:
-                            if rank_name in taxonomy:
-                                reply_text += f"     - {rank_name.capitalize()}: {taxonomy[rank_name]}\n"
-                    
-                    reply_text += "\n"
-                
-                # Add outcome summary
-                if len(formatted_results) < total:
-                    reply_text += f"\n*Showing top {len(formatted_results)} of {total} total results.*\n"
-                
-                # Add suggestions for next steps
-                reply_text += f"\n**What you can do next:**\n"
-                reply_text += f"- Ask about a specific species from the results for more details\n"
-                reply_text += f"- Search for related species (same genus or family)\n"
-                reply_text += f"- Explore conservation status or distribution information\n"
-                reply_text += f"- Check the artifact for complete data including raw API response\n"
+                reply_text += "See artifact for complete taxonomic data."
                 
                 # Create artifact with complete data
                 print("DEBUG: Creating artifact...")
@@ -392,9 +373,13 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 
                 # Send final response
                 print("DEBUG: Sending final response to user")
+                print(f"DEBUG: Reply text length: {len(reply_text)} characters")
                 
                 await context.reply(reply_text)
                 print("DEBUG: Response sent successfully!")
+                
+                # Add a confirmation log to verify reply was sent
+                await process.log("Response sent to user")
                 
             except Exception as e:
                 error_msg = f"Unexpected error during search: {str(e)}"
