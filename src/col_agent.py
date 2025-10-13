@@ -203,6 +203,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 api_params = {
                     "q": query_params.search_term,
                     "limit": min(query_params.limit or 5, 20)
+                    "content": "SCIENTIFIC_NAME"
                 }
                 
                 # Construct full URL for logging
