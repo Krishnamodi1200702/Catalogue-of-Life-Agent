@@ -31,10 +31,10 @@ class SearchParameters(BaseModel):
     )
 
 class TaxonDetailsParameters(BaseModel):
-    """Parameters for getting detailed taxon information"""
+    """Get detailed information for a specific taxon using its Catalogue of Life ID"""
     taxon_id: str = Field(
-        description="The taxon ID from a search result (e.g., '5T6MX' for Panthera leo)",
-        examples=["5T6MX", "9BBLS", "3T"]
+        description="Catalogue of Life taxon ID (alphanumeric code from search results like '4CGXP', '5K5L5'). This ID must be from a COL search result.",
+        examples=["4CGXP", "5K5L5", "9BBLS", "3T", "4CGXP"]
     )
 
 # STEP 3 & 4: Data model with validation for GPT to extract search terms
@@ -102,7 +102,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 ),
                 AgentEntrypoint(
                     id="get_taxon_details",
-                    description="Get detailed information about a specific taxon by ID",
+                    description="Retrieve complete taxonomic details for a specific taxon using its Catalogue of Life ID. Use this when user provides a taxon ID from search results.",
                     parameters=TaxonDetailsParameters
                 )
             ]
