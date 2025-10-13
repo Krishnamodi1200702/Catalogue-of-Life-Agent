@@ -43,8 +43,8 @@ class CoLQueryParams(BaseModel):
     limit: Optional[int] = Field(
         5, 
         description="Number of results (max 20)",
-        ge=1,  # STEP 4: Validation - minimum 1
-        le=20  # STEP 4: Validation - maximum 20
+        ge=1,
+        le=20
     )
 
 # STEP 1: Explore their data - Response models for API data
@@ -132,13 +132,9 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             process: IChatBioAgentProcess
             
             try:
-                await process.log("Starting Catalogue of Life search")
-                print("DEBUG: Starting search process...")
-                
                 # ============================================================
                 # STEP 5: Have LLM generate parameters using response model
                 # ============================================================
-                await process.log("Extracting search terms using GPT...")
                 print("DEBUG: Calling GPT to extract search parameters...")
                 
                 query_instructions = """
@@ -158,24 +154,15 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                             {"role": "system", "content": query_instructions},
                             {"role": "user", "content": f"Query: {request}\nParams: {params.query}"}
                         ],
-                        response_model=CoLQueryParams,  # STEP 5: Use Pydantic model as response model
+                        response_model=CoLQueryParams,
                         temperature=0,
                         max_retries=2
                     )
                     
                     print(f"DEBUG: GPT extracted - search_term: '{query_params.search_term}', limit: {query_params.limit}")
-                    await process.log(
-                        "Extracted search parameters from query",
-                        data={
-                            "search_term": query_params.search_term,
-                            "limit": query_params.limit,
-                            "original_query": request
-                        }
-                    )
                     
                 except Exception as gpt_error:
                     print(f"DEBUG: GPT extraction failed: {gpt_error}")
-                    await process.log("GPT extraction failed, using fallback...")
                     
                     # Fallback: use the raw query with validation
                     query_params = CoLQueryParams(
@@ -184,16 +171,19 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                     )
                     print(f"DEBUG: Using fallback search term: '{query_params.search_term}'")
                 
+                # LOG 1: Search initiated
+                await process.log(f"Search initiated for: '{query_params.search_term}'")
+                print("DEBUG: Starting search process...")
+                
                 # ============================================================
                 # STEP 6: Transform parameters into API query URLs
                 # ============================================================
-                await process.log("Building API query URL")
                 print("DEBUG: Building COL API URL...")
                 
                 col_url = "https://api.checklistbank.org/dataset/3LR/nameusage/search"
                 api_params = {
                     "q": query_params.search_term,
-                    "limit": min(query_params.limit or 5, 20)  # STEP 4: Validation enforced
+                    "limit": min(query_params.limit or 5, 20)
                 }
                 
                 # Construct full URL for logging
@@ -203,33 +193,24 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 print(f"DEBUG: API Params: {api_params}")
                 print(f"DEBUG: Full URL: {full_url}")
                 
+                # LOG 2: API Query
                 await process.log(
-                    "API query constructed",
+                    "API Query",
                     data={
                         "endpoint": col_url,
-                        "parameters": api_params,
-                        "full_url": full_url
+                        "parameters": api_params
                     }
                 )
                 
                 # ============================================================
                 # STEP 7: Run API query, collect response
                 # ============================================================
-                await process.log("Executing API request...")
                 print("DEBUG: Executing COL API request...")
                 
                 try:
                     response = requests.get(col_url, params=api_params, timeout=10)
                     print(f"DEBUG: API Response Status: {response.status_code}")
                     print(f"DEBUG: API Response URL: {response.url}")
-                    
-                    await process.log(
-                        "API request completed",
-                        data={
-                            "status_code": response.status_code,
-                            "response_url": response.url
-                        }
-                    )
                     
                     if response.status_code != 200:
                         error_msg = f"Catalogue of Life API error: HTTP {response.status_code}"
@@ -243,14 +224,6 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                         data = response.json()
                         print(f"DEBUG: Parsed JSON successfully")
                         print(f"DEBUG: Response keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
-                        
-                        await process.log(
-                            "Response parsed successfully",
-                            data={
-                                "response_type": type(data).__name__,
-                                "keys": list(data.keys()) if isinstance(data, dict) else []
-                            }
-                        )
                         
                     except json.JSONDecodeError as json_error:
                         print(f"DEBUG: JSON decode error: {json_error}")
@@ -271,17 +244,10 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 total = data.get("total", 0)
                 
                 print(f"DEBUG: Found {len(results)} results out of {total} total")
-                await process.log(
-                    "Processing search results",
-                    data={
-                        "results_returned": len(results),
-                        "total_matches": total,
-                        "query": query_params.search_term
-                    }
-                )
                 
                 if len(results) == 0:
-                    # STEP 9: Provide helpful suggestions when no results
+                    # Provide helpful suggestions when no results
+                    await process.log("No results found")
                     no_results_msg = (
                         f"No species found for '{query_params.search_term}' in Catalogue of Life.\n\n"
                         f"**Suggestions:**\n"
@@ -295,7 +261,6 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                     return
                 
                 # Extract and structure data from results
-                await process.log("Extracting taxonomic information from results...")
                 print("DEBUG: Extracting and formatting results...")
                 
                 formatted_results = []
@@ -304,7 +269,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                     try:
                         print(f"DEBUG: Processing result {i}...")
                         
-                        # CORRECTED: Extract from correct nested structure
+                        # Extract from correct nested structure
                         usage = item.get("usage", {})
                         name_obj = usage.get("name", {})
                         
@@ -312,7 +277,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                         rank = name_obj.get("rank", "Unknown")
                         status = usage.get("status", "Unknown")
                         
-                        # Extract classification hierarchy (already correct)
+                        # Extract classification hierarchy
                         classification = item.get("classification", [])
                         taxonomy = {}
                         
@@ -333,36 +298,28 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                         }
                         formatted_results.append(result_info)
                         
-                        # Log first 3 results with key taxonomic details
-                        if i <= 3:
-                            key_taxonomy = {k: v for k, v in taxonomy.items() if k in ["kingdom", "phylum", "family", "genus"]}
-                            await process.log(
-                                f"Result {i}: {scientific_name}",
-                                data={
-                                    "scientific_name": scientific_name,
-                                    "rank": rank,
-                                    "status": status,
-                                    "key_taxonomy": key_taxonomy
-                                }
-                            )
-                        
                     except Exception as item_error:
                         print(f"DEBUG: Error processing result {i}: {item_error}")
-                        await process.log(f"Skipped malformed result {i}", data={"error": str(item_error)})
                         continue
                 
-                await process.log(
-                    "Data extraction completed",
-                    data={
-                        "formatted_count": len(formatted_results),
-                        "total_available": total
+                # LOG 3: Results summary with top results
+                top_results_summary = [
+                    {
+                        "scientific_name": r["scientificName"],
+                        "rank": r["rank"],
+                        "status": r["status"]
                     }
+                    for r in formatted_results
+                ]
+                
+                await process.log(
+                    f"Results: Found {total} matches, showing top {len(formatted_results)}",
+                    data={"results": top_results_summary}
                 )
                 
                 # ============================================================
                 # STEP 9: Generate verbal summary with actions, outcomes, and suggestions
                 # ============================================================
-                await process.log("Generating summary and recommendations...")
                 print("DEBUG: Generating verbal summary...")
                 
                 # Build detailed reply text
@@ -387,11 +344,11 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                     
                     reply_text += "\n"
                 
-                # STEP 9: Add outcome summary
+                # Add outcome summary
                 if len(formatted_results) < total:
                     reply_text += f"\n*Showing top {len(formatted_results)} of {total} total results.*\n"
                 
-                # STEP 9: Add suggestions for next steps
+                # Add suggestions for next steps
                 reply_text += f"\n**What you can do next:**\n"
                 reply_text += f"- Ask about a specific species from the results for more details\n"
                 reply_text += f"- Search for related species (same genus or family)\n"
@@ -399,7 +356,6 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 reply_text += f"- Check the artifact for complete data including raw API response\n"
                 
                 # Create artifact with complete data
-                await process.log("Creating results artifact...")
                 print("DEBUG: Creating artifact...")
                 
                 artifact_data = {
@@ -411,7 +367,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                         "api_url": response.url
                     },
                     "results": formatted_results,
-                    "raw_response": data  # Include raw response for debugging/advanced use
+                    "raw_response": data
                 }
                 
                 try:
@@ -429,14 +385,12 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                         }
                     )
                     print("DEBUG: Artifact created successfully")
-                    await process.log("Artifact created with complete search results and metadata")
                     
                 except Exception as artifact_error:
                     print(f"DEBUG: Failed to create artifact: {artifact_error}")
                     await process.log(f"Failed to create artifact: {str(artifact_error)}")
                 
                 # Send final response
-                await process.log("Search workflow completed successfully")
                 print("DEBUG: Sending final response to user")
                 
                 await context.reply(reply_text)
