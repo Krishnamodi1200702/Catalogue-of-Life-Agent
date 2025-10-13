@@ -1,7 +1,7 @@
 import os
 import json
 import traceback
-from typing import Optional, List
+from typing import Optional, List, Union
 from typing_extensions import override
 from urllib.parse import urlencode
 
@@ -28,6 +28,13 @@ class SearchParameters(BaseModel):
     query: str = Field(
         description="What to search for in Catalogue of Life",
         examples=["tiger", "Panthera leo", "oak tree"]
+    )
+
+class TaxonDetailsParameters(BaseModel):
+    """Parameters for getting detailed taxon information"""
+    taxon_id: str = Field(
+        description="The taxon ID from a search result (e.g., '5T6MX' for Panthera leo)",
+        examples=["5T6MX", "9BBLS", "3T"]
     )
 
 # STEP 3 & 4: Data model with validation for GPT to extract search terms
@@ -92,6 +99,11 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                     id="search",
                     description="Search for species or taxonomic information",
                     parameters=SearchParameters
+                ),
+                AgentEntrypoint(
+                    id="get_taxon_details",
+                    description="Get detailed information about a specific taxon by ID",
+                    parameters=TaxonDetailsParameters
                 )
             ]
         )
@@ -102,32 +114,8 @@ class CatalogueOfLifeAgent(IChatBioAgent):
         
         return card
 
-    @override
-    async def run(self, context: ResponseContext, request: str, entrypoint: str, params: SearchParameters):
-        """
-        Main agent workflow implementing all 9 steps:
-        1. Explore data (via response models)
-        2. Explore API (COL REST API)
-        3. Create Pydantic models (CoLQueryParams, CoLResult)
-        4. Add validation (min_length, ge, le constraints)
-        5. LLM generates parameters (instructor + GPT)
-        6. Transform to API URLs (build query URLs)
-        7. Execute API queries (requests.get)
-        8. Extract/derive summary (parse results, build taxonomy)
-        9. Generate verbal summary (detailed reply with suggestions)
-        """
-        print(f"\nDEBUG: Agent.run() called!")
-        print(f"DEBUG: Entrypoint: {entrypoint}")
-        print(f"DEBUG: Request: {request}")
-        print(f"DEBUG: Params: {params}")
-        
-        # Validate entrypoint
-        if entrypoint != "search":
-            error_msg = f"Unknown entrypoint: {entrypoint}. Expected 'search'"
-            print(f"DEBUG: {error_msg}")
-            await context.reply(error_msg)
-            return
-
+    async def _handle_search(self, context: ResponseContext, request: str, params: SearchParameters):
+        """Handle the search entrypoint"""
         async with context.begin_process(summary="Searching Catalogue of Life") as process:
             process: IChatBioAgentProcess
             
@@ -267,7 +255,6 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 print(f"DEBUG: Found {len(results)} results out of {total} total")
                 
                 if len(results) == 0:
-                    # Provide helpful suggestions when no results
                     await process.log("No results found")
                     no_results_msg = (
                         f"No species found for '{query_params.search_term}' in Catalogue of Life.\n\n"
@@ -289,6 +276,9 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 for i, item in enumerate(results[:5], 1):
                     try:
                         print(f"DEBUG: Processing result {i}...")
+                        
+                        # Extract taxon ID
+                        taxon_id = item.get("id", "")
                         
                         # Extract from correct nested structure
                         usage = item.get("usage", {})
@@ -312,6 +302,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                                     taxonomy[taxon_rank] = taxon_name
                         
                         result_info = {
+                            "id": taxon_id,
                             "scientificName": scientific_name,
                             "rank": rank,
                             "status": status,
@@ -326,6 +317,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 # LOG 3: Results summary with top results
                 top_results_summary = [
                     {
+                        "id": r["id"],
                         "scientific_name": r["scientificName"],
                         "rank": r["rank"],
                         "status": r["status"]
@@ -339,25 +331,21 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 )
                 
                 # ============================================================
-                # STEP 9: Generate verbal summary with actions, outcomes, and suggestions
+                # STEP 9: Generate response
                 # ============================================================
-                print("DEBUG: Generating verbal summary...")
+                print("DEBUG: Generating response...")
                 
-                # Build concise reply - just the key finding
-                # The detailed data is in the artifact
                 if len(formatted_results) == 1:
                     main_result = formatted_results[0]
                     result_scientific_name = main_result['scientificName']
                     reply_text = f"Found {result_scientific_name} ({main_result['rank']}, {main_result['status']}). "
                     
-                    # Check if result seems unrelated to query (heuristic check)
                     query_lower = query_params.search_term.lower()
                     result_name_lower = result_scientific_name.lower()
                     
-                    # If query doesn't appear in result name and they're very different, it might be wrong
                     if (len(query_lower) > 3 and 
                         query_lower not in result_name_lower and 
-                        result_name_lower.split()[0].lower() != query_lower):  # Check genus too
+                        result_name_lower.split()[0].lower() != query_lower):
                         
                         reply_text += f"\n\nNote: This result may not match your search for '{query_params.search_term}'. "
                         reply_text += "The COL API searches broadly (including author names and references). "
@@ -408,12 +396,8 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 
                 # Send final response
                 print("DEBUG: Sending final response to user")
-                print(f"DEBUG: Reply text length: {len(reply_text)} characters")
-                
                 await context.reply(reply_text)
                 print("DEBUG: Response sent successfully!")
-                
-                # Add a confirmation log to verify reply was sent
                 await process.log("Response sent to user")
                 
             except Exception as e:
@@ -430,6 +414,200 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                     f"- Check your internet connection\n"
                     f"- Try again in a few moments"
                 )
+
+    async def _handle_taxon_details(self, context: ResponseContext, request: str, params: TaxonDetailsParameters):
+        """Handle the get_taxon_details entrypoint"""
+        async with context.begin_process(summary="Fetching taxon details") as process:
+            process: IChatBioAgentProcess
+            
+            try:
+                taxon_id = params.taxon_id.strip()
+                
+                # LOG 1: Request initiated
+                await process.log(f"Fetching details for taxon ID: '{taxon_id}'")
+                print(f"DEBUG: Fetching taxon details for ID: {taxon_id}")
+                
+                # Build API URL
+                col_url = f"https://api.checklistbank.org/dataset/3LR/taxon/{taxon_id}"
+                
+                print(f"DEBUG: API URL: {col_url}")
+                
+                # LOG 2: API Query
+                await process.log(
+                    "API Query",
+                    data={"endpoint": col_url}
+                )
+                
+                # Execute API request
+                print("DEBUG: Executing COL API request...")
+                
+                try:
+                    response = requests.get(col_url, timeout=10)
+                    print(f"DEBUG: API Response Status: {response.status_code}")
+                    
+                    if response.status_code == 404:
+                        await process.log("Taxon ID not found")
+                        await context.reply(f"Taxon ID '{taxon_id}' not found in Catalogue of Life. Please check the ID and try again.")
+                        return
+                    
+                    if response.status_code != 200:
+                        error_msg = f"Catalogue of Life API error: HTTP {response.status_code}"
+                        print(f"DEBUG: {error_msg}")
+                        await process.log(f"API error: {error_msg}")
+                        await context.reply(error_msg)
+                        return
+                    
+                    data = response.json()
+                    print(f"DEBUG: Parsed JSON successfully")
+                    
+                except requests.RequestException as req_error:
+                    print(f"DEBUG: Request error: {req_error}")
+                    await process.log(f"Network error: {str(req_error)}")
+                    await context.reply("Error: Could not connect to Catalogue of Life API")
+                    return
+                except json.JSONDecodeError:
+                    print(f"DEBUG: JSON decode error")
+                    await process.log("Failed to parse API response")
+                    await context.reply("Error: Invalid response from Catalogue of Life API")
+                    return
+                
+                # Extract taxon information
+                print("DEBUG: Extracting taxon details...")
+                
+                name_obj = data.get("name", {})
+                scientific_name = name_obj.get("scientificName", "Unknown")
+                authorship = name_obj.get("authorship", "")
+                rank = name_obj.get("rank", "Unknown")
+                status = data.get("status", "Unknown")
+                
+                # Extract classification
+                classification = data.get("classification", [])
+                taxonomy = {}
+                
+                desired_ranks = ["domain", "kingdom", "phylum", "class", "order", "family", "genus", "species"]
+                
+                for taxon in classification:
+                    taxon_rank = taxon.get("rank", "").lower()
+                    taxon_name = taxon.get("name", "")
+                    if taxon_rank in desired_ranks and taxon_name:
+                        taxonomy[taxon_rank] = taxon_name
+                
+                # Extract additional details
+                extinct = data.get("extinct", False)
+                environments = data.get("environments", [])
+                link = data.get("link", "")
+                
+                # LOG 3: Details retrieved
+                await process.log(
+                    f"Retrieved details for: {scientific_name}",
+                    data={
+                        "scientific_name": scientific_name,
+                        "rank": rank,
+                        "status": status,
+                        "extinct": extinct
+                    }
+                )
+                
+                # Build reply
+                full_name = f"{scientific_name} {authorship}".strip()
+                reply_text = f"**{full_name}**\n\n"
+                reply_text += f"**Rank:** {rank}\n"
+                reply_text += f"**Status:** {status}\n"
+                
+                if extinct:
+                    reply_text += f"**Extinct:** Yes ☠️\n"
+                
+                if environments:
+                    reply_text += f"**Environments:** {', '.join(environments)}\n"
+                
+                if taxonomy:
+                    reply_text += f"\n**Complete Taxonomic Classification:**\n"
+                    for rank_name in ["domain", "kingdom", "phylum", "class", "order", "family", "genus", "species"]:
+                        if rank_name in taxonomy:
+                            reply_text += f"- {rank_name.capitalize()}: {taxonomy[rank_name]}\n"
+                
+                if link:
+                    reply_text += f"\n**External Link:** {link}\n"
+                
+                reply_text += f"\nSee artifact for complete data including references and additional details."
+                
+                # Create artifact
+                print("DEBUG: Creating artifact...")
+                
+                artifact_data = {
+                    "taxon_info": {
+                        "id": taxon_id,
+                        "scientific_name": scientific_name,
+                        "authorship": authorship,
+                        "rank": rank,
+                        "status": status,
+                        "extinct": extinct,
+                        "environments": environments,
+                        "link": link
+                    },
+                    "taxonomy": taxonomy,
+                    "raw_response": data
+                }
+                
+                try:
+                    await process.create_artifact(
+                        mimetype="application/json",
+                        description=f"Complete taxon details for {scientific_name}",
+                        content=json.dumps(artifact_data, indent=2).encode('utf-8'),
+                        uris=[link] if link else [col_url],
+                        metadata={
+                            "data_source": "Catalogue of Life",
+                            "taxon_id": taxon_id,
+                            "scientific_name": scientific_name,
+                            "rank": rank
+                        }
+                    )
+                    print("DEBUG: Artifact created successfully")
+                    
+                except Exception as artifact_error:
+                    print(f"DEBUG: Failed to create artifact: {artifact_error}")
+                    await process.log(f"Failed to create artifact: {str(artifact_error)}")
+                
+                # Send response
+                print("DEBUG: Sending response to user")
+                await context.reply(reply_text)
+                await process.log("Response sent to user")
+                print("DEBUG: Response sent successfully!")
+                
+            except Exception as e:
+                error_msg = f"Unexpected error fetching taxon details: {str(e)}"
+                print(f"DEBUG: MAJOR ERROR: {error_msg}")
+                print(f"DEBUG: Traceback: {traceback.format_exc()}")
+                
+                await process.log(f"Error occurred: {error_msg}")
+                await context.reply(
+                    f"Sorry, an error occurred while fetching taxon details.\n\n"
+                    f"**Error:** {str(e)}\n\n"
+                    f"Please check the taxon ID and try again."
+                )
+
+    @override
+    async def run(self, context: ResponseContext, request: str, entrypoint: str, params: Union[SearchParameters, TaxonDetailsParameters]):
+        """
+        Main agent entry point - routes to appropriate handler based on entrypoint
+        """
+        print(f"\nDEBUG: Agent.run() called!")
+        print(f"DEBUG: Entrypoint: {entrypoint}")
+        print(f"DEBUG: Request: {request}")
+        print(f"DEBUG: Params: {params}")
+        
+        # Validate entrypoint
+        if entrypoint not in ["search", "get_taxon_details"]:
+            error_msg = f"Unknown entrypoint: {entrypoint}. Expected 'search' or 'get_taxon_details'"
+            print(f"DEBUG: {error_msg}")
+            await context.reply(error_msg)
+            return
+
+        # Route to appropriate handler
+        if entrypoint == "search":
+            await self._handle_search(context, request, params)
+        elif entrypoint == "get_taxon_details":
+            await self._handle_taxon_details(context, request, params)
 
 
 # Test the agent locally before running the server
