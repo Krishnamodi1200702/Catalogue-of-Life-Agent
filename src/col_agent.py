@@ -202,7 +202,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 col_url = "https://api.checklistbank.org/dataset/3LR/nameusage/search"
                 api_params = {
                     "q": query_params.search_term,
-                    "limit": min(query_params.limit or 5, 20)
+                    "limit": min(query_params.limit or 5, 20),
                     "content": "SCIENTIFIC_NAME"
                 }
                 
