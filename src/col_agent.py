@@ -138,13 +138,32 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 print("DEBUG: Calling GPT to extract search parameters...")
                 
                 query_instructions = """
-                Extract a simple search term from the user's query for the Catalogue of Life database.
-                Focus on:
-                - Scientific names (like "Homo sapiens", "Panthera leo")
-                - Common names (like "human", "lion", "tiger")
-                - Genus names (like "Homo", "Panthera")
+                You are helping search the Catalogue of Life database, which uses scientific (Latin) names.
                 
-                Keep it simple - just extract the main species/organism they want to search for.
+                Your task: Convert the user's query into the BEST search term.
+                
+                CRITICAL RULES:
+                1. If the user gives a common name, YOU MUST convert it to the scientific name:
+                   - "lion" → "Panthera leo"
+                   - "tiger" → "Panthera tigris" 
+                   - "elephant" → "Loxodonta africana" OR "Elephas maximus"
+                   - "human" → "Homo sapiens"
+                   - "dog" → "Canis lupus familiaris"
+                   - "cat" → "Felis catus"
+                   - "polar bear" → "Ursus maritimus"
+                   - "bald eagle" → "Haliaeetus leucocephalus"
+                   
+                2. If the user already gives a scientific name, keep it as-is:
+                   - "Panthera leo" → "Panthera leo"
+                   - "Homo sapiens" → "Homo sapiens"
+                   
+                3. If the user gives a genus name, keep it:
+                   - "Panthera" → "Panthera"
+                   - "Homo" → "Homo"
+                   
+                4. If you don't know the scientific name for a common name, use the common name
+                
+                Return ONLY the search term, nothing else.
                 """
                 
                 try:
@@ -327,7 +346,22 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 # The detailed data is in the artifact
                 if len(formatted_results) == 1:
                     main_result = formatted_results[0]
-                    reply_text = f"Found {main_result['scientificName']} ({main_result['rank']}, {main_result['status']}). "
+                    result_scientific_name = main_result['scientificName']
+                    reply_text = f"Found {result_scientific_name} ({main_result['rank']}, {main_result['status']}). "
+                    
+                    # Check if result seems unrelated to query (heuristic check)
+                    query_lower = query_params.search_term.lower()
+                    result_name_lower = result_scientific_name.lower()
+                    
+                    # If query doesn't appear in result name and they're very different, it might be wrong
+                    if (len(query_lower) > 3 and 
+                        query_lower not in result_name_lower and 
+                        result_name_lower.split()[0].lower() != query_lower):  # Check genus too
+                        
+                        reply_text += f"\n\nNote: This result may not match your search for '{query_params.search_term}'. "
+                        reply_text += "The COL API searches broadly (including author names and references). "
+                        reply_text += "For better results, try using the scientific name (e.g., 'Panthera leo' for lion). "
+                    
                 elif len(formatted_results) > 1:
                     reply_text = f"Found {total} matches for '{query_params.search_term}'. "
                     reply_text += f"Top result: {formatted_results[0]['scientificName']} ({formatted_results[0]['rank']}). "
