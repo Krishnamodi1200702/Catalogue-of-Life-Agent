@@ -704,7 +704,8 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                     
                     data = response.json()
                     print(f"DEBUG: Parsed JSON successfully")
-                    print(f"DEBUG: Number of synonyms: {len(data)}")
+                    synonyms_data = data.get("heterotypic", [])
+                    print(f"DEBUG: Number of synonyms: {len(synonyms_data)}")
                     
                 except requests.RequestException as req_error:
                     print(f"DEBUG: Request error: {req_error}")
@@ -718,7 +719,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                     return
                 
                 # Check if there are any synonyms
-                if not data or len(data) == 0:
+                if not synonyms_data or len(synonyms_data) == 0:
                     await process.log("No synonyms found")
                     display_name = scientific_name if scientific_name else f"taxon ID '{taxon_id}'"
                     await context.reply(f"No synonyms found for {display_name}. This may be the currently accepted name with no alternative names.")
