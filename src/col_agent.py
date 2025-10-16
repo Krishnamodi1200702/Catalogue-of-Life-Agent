@@ -537,9 +537,12 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                     for rank_name in ["domain", "kingdom", "phylum", "class", "order", "family", "genus", "species"]:
                         if rank_name in taxonomy:
                             reply_text += f"- {rank_name.capitalize()}: {taxonomy[rank_name]}\n"
+                            
+                col_page = f"https://www.checklistbank.org/dataset/3LR/taxon/{taxon_id}"
+                reply_text += f"\n**Catalogue of Life Page:** {col_page}\n"
                 
                 if link:
-                    reply_text += f"\n**External Link:** {link}\n"
+                    reply_text += f"**Original Data Source:** {link}\n"
                 
                 reply_text += f"\nSee artifact for complete data including references and additional details."
                 
