@@ -730,7 +730,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 
                 synonyms_list = []
                 
-                for item in data:
+                for item in synonyms_data:
                     try:
                         name_obj = item.get("name", {})
                         syn_scientific_name = name_obj.get("scientificName", "Unknown")
