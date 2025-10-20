@@ -1,899 +1,745 @@
+"""
+Catalogue of Life Agent
+A professional implementation for searching and retrieving taxonomic information
+from the Catalogue of Life database via the Checklistbank API.
+"""
+
 import os
 import json
 import traceback
-from typing import Optional, List, Union
+import logging
+from typing import Optional, List, Union, Dict, Any
 from typing_extensions import override
 from urllib.parse import urlencode
+from dataclasses import dataclass
 
 import dotenv
 import instructor
 import requests
 from openai import AsyncOpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 
 from ichatbio.agent import IChatBioAgent
 from ichatbio.agent_response import ResponseContext, IChatBioAgentProcess
 from ichatbio.types import AgentCard, AgentEntrypoint
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 # Load environment variables
 dotenv.load_dotenv()
 
-print("DEBUG: Loading environment variables...")
-print(f"DEBUG: OPENAI_API_KEY loaded: {'Yes' if os.getenv('OPENAI_API_KEY') else 'No'}")
-print(f"DEBUG: OPENAI_BASE_URL: {os.getenv('OPENAI_BASE_URL', 'Not set')}")
+# Constants
+COL_API_BASE = "https://api.checklistbank.org/dataset/3LR"
+COL_WEB_BASE = "https://www.catalogueoflife.org/data/taxon"
+DEFAULT_TIMEOUT = 10
+MAX_RESULTS_LIMIT = 20
+DEFAULT_RESULTS_LIMIT = 5
 
-# STEP 3: Create Pydantic data models for the API
+# Taxonomic ranks in hierarchical order
+TAXONOMIC_RANKS = [
+    "domain", "kingdom", "phylum", "class", 
+    "order", "family", "genus", "species"
+]
+
+
 class SearchParameters(BaseModel):
-    """User-facing parameters for the search entrypoint"""
+    """Parameters for searching the Catalogue of Life"""
     query: str = Field(
-        description="What to search for in Catalogue of Life",
-        examples=["tiger", "Panthera leo", "oak tree"]
+        description="Search term for species or taxonomic group",
+        examples=["tiger", "Panthera leo", "oak tree"],
+        min_length=1,
+        max_length=200
     )
+    
+    @validator('query')
+    def clean_query(cls, v):
+        return v.strip()
+
 
 class TaxonDetailsParameters(BaseModel):
-    """Get detailed information for a specific taxon using its Catalogue of Life ID"""
+    """Parameters for retrieving detailed taxon information"""
     taxon_id: str = Field(
-        description="Catalogue of Life taxon ID (alphanumeric code from search results like '4CGXP', '5K5L5'). This ID must be from a COL search result.",
-        examples=["4CGXP", "5K5L5", "9BBLS", "3T", "4CGXS"]
+        description="Catalogue of Life taxon identifier",
+        examples=["4CGXP", "5K5L5", "9BBLS"],
+        min_length=1,
+        max_length=20
     )
+    
+    @validator('taxon_id')
+    def clean_taxon_id(cls, v):
+        return v.strip()
+
 
 class GetSynonymsParameters(BaseModel):
-    """Parameters for getting synonyms of a taxon"""
+    """Parameters for retrieving taxonomic synonyms"""
     query: str = Field(
-        description="Scientific name (e.g., 'Panthera leo') OR taxon ID (e.g., '4CGXP') to get synonyms for",
-        examples=["Panthera leo", "4CGXP", "Homo sapiens", "4CGXS"]
+        description="Scientific name or taxon ID",
+        examples=["Panthera leo", "4CGXP", "Homo sapiens"],
+        min_length=1,
+        max_length=200
     )
+    
+    @validator('query')
+    def clean_query(cls, v):
+        return v.strip()
 
-# STEP 3 & 4: Data model with validation for GPT to extract search terms
+
 class CoLQueryParams(BaseModel):
     """Validated parameters for COL API queries"""
     search_term: str = Field(
-        ..., 
-        description="Scientific or common name to search for",
+        description="Scientific or common name to search",
         min_length=2,
-        max_length=100,
-        examples=["Panthera leo", "tiger", "Homo sapiens"]
+        max_length=100
     )
-    limit: Optional[int] = Field(
-        5, 
-        description="Number of results (max 20)",
+    limit: int = Field(
+        default=DEFAULT_RESULTS_LIMIT,
         ge=1,
-        le=20
+        le=MAX_RESULTS_LIMIT
     )
 
-# STEP 1: Explore their data - Response models for API data
-class TaxonClassification(BaseModel):
-    """Model for taxonomic classification entries"""
-    rank: str
-    name: str
 
-class CoLResult(BaseModel):
-    """Model for individual search results from COL API"""
-    scientificName: str
+@dataclass
+class TaxonInfo:
+    """Structured taxon information"""
+    id: str
+    scientific_name: str
     rank: str
     status: str
-    classification: Optional[List[TaxonClassification]] = []
+    authorship: Optional[str] = None
+    extinct: bool = False
+    col_url: Optional[str] = None
+    taxonomy: Optional[Dict[str, str]] = None
+
+
+class APIError(Exception):
+    """Custom exception for API-related errors"""
+    pass
+
 
 class CatalogueOfLifeAgent(IChatBioAgent):
+    """Agent for interacting with the Catalogue of Life database"""
     
     def __init__(self):
-        print("DEBUG: Initializing CatalogueOfLifeAgent...")
+        """Initialize the agent with necessary clients and configurations"""
+        logger.info("Initializing Catalogue of Life Agent")
         super().__init__()
         
-        # Initialize OpenAI client for STEP 5: LLM parameter generation
+        # Initialize OpenAI client for query processing
         try:
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise ValueError("OPENAI_API_KEY environment variable not set")
+                
             self.openai_client = AsyncOpenAI(
-                api_key=os.getenv("OPENAI_API_KEY"),
+                api_key=api_key,
                 base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
             )
             self.instructor_client = instructor.patch(self.openai_client)
-            print("DEBUG: OpenAI client initialized successfully")
+            logger.info("OpenAI client initialized successfully")
+            
         except Exception as e:
-            print(f"DEBUG: Failed to initialize OpenAI client: {e}")
+            logger.error(f"Failed to initialize OpenAI client: {e}")
             raise
     
     @override
     def get_agent_card(self) -> AgentCard:
-        print("DEBUG: Creating agent card...")
-        
-        card = AgentCard(
+        """Define the agent's capabilities and endpoints"""
+        return AgentCard(
             name="Catalogue of Life Agent",
-            description="Search for species and taxonomic information from the Catalogue of Life database",
+            description="Professional taxonomic information service using the Catalogue of Life database",
             icon=None,
             url="http://localhost:9999",
             entrypoints=[
                 AgentEntrypoint(
                     id="search",
-                    description="Search for species or taxonomic information",
+                    description="Search for species or taxonomic groups",
                     parameters=SearchParameters
                 ),
                 AgentEntrypoint(
                     id="get_taxon_details",
-                    description="Retrieve complete taxonomic details for a specific taxon using its Catalogue of Life ID. Use this when user provides a taxon ID from search results.",
+                    description="Retrieve comprehensive taxonomic details for a specific taxon",
                     parameters=TaxonDetailsParameters
                 ),
                 AgentEntrypoint(
                     id="get_synonyms",
-                    description="Get all synonyms (alternative scientific names) for a specific taxon using either its scientific name or taxon ID",
+                    description="Find alternative scientific names (synonyms) for a taxon",
                     parameters=GetSynonymsParameters
                 )
             ]
         )
+    
+    async def _convert_to_scientific_name(self, query: str) -> CoLQueryParams:
+        """Convert common names to scientific names using GPT"""
+        conversion_prompt = """
+        Convert the given query to the most appropriate scientific name for searching the Catalogue of Life database.
         
-        print(f"DEBUG: Agent card created - Name: {card.name}")
-        print(f"DEBUG: Agent URL: {card.url}")
-        print(f"DEBUG: Entrypoints: {[ep.id for ep in card.entrypoints]}")
+        Rules:
+        1. Common to scientific name conversions:
+           - lion -> Panthera leo
+           - tiger -> Panthera tigris
+           - elephant -> Loxodonta (African) or Elephas (Asian)
+           - human -> Homo sapiens
+           - dog -> Canis lupus familiaris
+           - cat -> Felis catus
+           - wolf -> Canis lupus
+           - bear -> Ursus (genus)
+           - eagle -> Aquila (genus) or specific species
+           
+        2. Plants (use botanical names):
+           - oak/oak tree -> Quercus
+           - pine/pine tree -> Pinus
+           - maple -> Acer
+           - rose -> Rosa
+           - sunflower -> Helianthus
+           
+        3. Extinct species:
+           - tyrannosaurus/t-rex -> Tyrannosaurus rex
+           - mammoth -> Mammuthus
+           - dodo -> Raphus cucullatus
+           - dinosaur -> Dinosauria
+           
+        4. If already a scientific name, preserve it exactly
+        5. When uncertain, use genus level (single word)
         
-        return card
-
-    async def _handle_search(self, context: ResponseContext, request: str, params: SearchParameters):
-        """Handle the search entrypoint"""
-        async with context.begin_process(summary="Searching Catalogue of Life") as process:
-            process: IChatBioAgentProcess
+        Return only the scientific name, nothing else.
+        """
+        
+        try:
+            result = await self.instructor_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": conversion_prompt},
+                    {"role": "user", "content": f"Convert: {query}"}
+                ],
+                response_model=CoLQueryParams,
+                temperature=0,
+                max_retries=2
+            )
+            logger.info(f"Query converted: '{query}' -> '{result.search_term}'")
+            return result
             
+        except Exception as e:
+            logger.warning(f"GPT conversion failed: {e}. Using original query.")
+            return CoLQueryParams(search_term=query, limit=DEFAULT_RESULTS_LIMIT)
+    
+    async def _make_api_request(self, url: str, params: Optional[Dict] = None) -> Dict[str, Any]:
+        """Make HTTP request to the COL API with error handling"""
+        try:
+            response = requests.get(url, params=params, timeout=DEFAULT_TIMEOUT)
+            response.raise_for_status()
+            return response.json()
+            
+        except requests.exceptions.Timeout:
+            raise APIError("Request timeout - the service may be busy")
+        except requests.exceptions.ConnectionError:
+            raise APIError("Cannot connect to Catalogue of Life service")
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                raise APIError("Resource not found")
+            raise APIError(f"HTTP {e.response.status_code}: {e.response.reason}")
+        except json.JSONDecodeError:
+            raise APIError("Invalid response format from service")
+    
+    def _extract_taxon_info(self, data: Dict[str, Any], taxon_id: Optional[str] = None) -> TaxonInfo:
+        """Extract and structure taxon information from API response"""
+        # Handle different response structures
+        if "usage" in data:
+            # Search result structure
+            taxon_id = taxon_id or data.get("id", "")
+            usage = data.get("usage", {})
+            name_obj = usage.get("name", {})
+            status = usage.get("status", "Unknown")
+            extinct = usage.get("extinct", False)
+        else:
+            # Direct taxon structure
+            taxon_id = taxon_id or data.get("id", "")
+            name_obj = data.get("name", {})
+            status = data.get("status", "Unknown")
+            extinct = data.get("extinct", False)
+        
+        # Extract classification
+        classification = data.get("classification", [])
+        taxonomy = {}
+        for item in classification:
+            rank = item.get("rank", "").lower()
+            if rank in TAXONOMIC_RANKS:
+                taxonomy[rank] = item.get("name", "")
+        
+        return TaxonInfo(
+            id=taxon_id,
+            scientific_name=name_obj.get("scientificName", "Unknown"),
+            rank=name_obj.get("rank", "Unknown"),
+            status=status,
+            authorship=name_obj.get("authorship", ""),
+            extinct=extinct,
+            col_url=f"{COL_WEB_BASE}/{taxon_id}" if taxon_id else None,
+            taxonomy=taxonomy
+        )
+    
+    def _format_search_results(self, results: List[TaxonInfo], total: int, query: str) -> str:
+        """Format search results for user display"""
+        if not results:
+            return self._format_no_results_message(query)
+        
+        if len(results) == 1:
+            result = results[0]
+            extinct_note = " [EXTINCT]" if result.extinct else ""
+            return (
+                f"Found: **{result.scientific_name}**{extinct_note}\n"
+                f"Rank: {result.rank}\n"
+                f"Status: {result.status}\n"
+                f"COL Page: {result.col_url}\n\n"
+                f"See artifact for complete taxonomic data."
+            )
+        
+        # Multiple results
+        message = f"Found {total} matches for '{query}':\n\n"
+        
+        for i, result in enumerate(results[:3], 1):
+            extinct_note = " [EXTINCT]" if result.extinct else ""
+            message += (
+                f"{i}. **{result.scientific_name}**{extinct_note}\n"
+                f"   Rank: {result.rank} | Status: {result.status}\n"
+                f"   COL: {result.col_url}\n\n"
+            )
+        
+        if len(results) > 3:
+            message += f"... and {len(results) - 3} more results. "
+        
+        message += "See artifact for complete data."
+        return message
+    
+    def _format_no_results_message(self, query: str) -> str:
+        """Generate helpful message when no results are found"""
+        suggestions = [
+            "Verify the spelling of scientific names",
+            "Try searching at genus level (first word only)",
+            "Use scientific names instead of common names"
+        ]
+        
+        # Add context-specific suggestions
+        query_lower = query.lower()
+        if any(term in query_lower for term in ["tree", "plant", "flower"]):
+            suggestions.insert(0, "For plants, use botanical names (e.g., 'Quercus' for oak)")
+        elif any(term in query_lower for term in ["extinct", "fossil", "dinosaur"]):
+            suggestions.insert(0, "For extinct species, use full scientific names")
+        
+        return (
+            f"No results found for '{query}' in Catalogue of Life.\n\n"
+            f"Suggestions:\n" + 
+            "\n".join(f"- {suggestion}" for suggestion in suggestions)
+        )
+    
+    async def _handle_search(self, context: ResponseContext, request: str, params: SearchParameters):
+        """Handle species search requests"""
+        async with context.begin_process(summary="Searching Catalogue of Life") as process:
             try:
-                # ============================================================
-                # STEP 5: Have LLM generate parameters using response model
-                # ============================================================
-                print("DEBUG: Calling GPT to extract search parameters...")
+                # Convert query to scientific name if needed
+                query_params = await self._convert_to_scientific_name(params.query)
                 
-                query_instructions = """
-                You are helping search the Catalogue of Life database, which uses scientific (Latin) names.
+                await process.log(f"Searching for: '{query_params.search_term}'")
                 
-                Your task: Convert the user's query into the BEST search term.
-                
-                CRITICAL RULES:
-                1. If the user gives a common name, YOU MUST convert it to the scientific name:
-                   - "lion" → "Panthera leo"
-                   - "tiger" → "Panthera tigris" 
-                   - "elephant" → "Loxodonta africana" OR "Elephas maximus"
-                   - "human" → "Homo sapiens"
-                   - "dog" → "Canis lupus familiaris"
-                   - "cat" → "Felis catus"
-                   - "polar bear" → "Ursus maritimus"
-                   - "bald eagle" → "Haliaeetus leucocephalus"
-                   
-                2. If the user already gives a scientific name, keep it as-is:
-                   - "Panthera leo" → "Panthera leo"
-                   - "Homo sapiens" → "Homo sapiens"
-                   
-                3. If the user gives a genus name, keep it:
-                   - "Panthera" → "Panthera"
-                   - "Homo" → "Homo"
-                   
-                4. If you don't know the scientific name for a common name, use the common name
-                
-                Return ONLY the search term, nothing else.
-                """
-                
-                try:
-                    query_params: CoLQueryParams = await self.instructor_client.chat.completions.create(
-                        model="gpt-4o-mini",
-                        messages=[
-                            {"role": "system", "content": query_instructions},
-                            {"role": "user", "content": f"Query: {request}\nParams: {params.query}"}
-                        ],
-                        response_model=CoLQueryParams,
-                        temperature=0,
-                        max_retries=2
-                    )
-                    
-                    print(f"DEBUG: GPT extracted - search_term: '{query_params.search_term}', limit: {query_params.limit}")
-                    
-                except Exception as gpt_error:
-                    print(f"DEBUG: GPT extraction failed: {gpt_error}")
-                    
-                    # Fallback: use the raw query with validation
-                    query_params = CoLQueryParams(
-                        search_term=params.query or request,
-                        limit=5
-                    )
-                    print(f"DEBUG: Using fallback search term: '{query_params.search_term}'")
-                
-                # LOG 1: Search initiated
-                await process.log(f"Search initiated for: '{query_params.search_term}'")
-                print("DEBUG: Starting search process...")
-                
-                # ============================================================
-                # STEP 6: Transform parameters into API query URLs
-                # ============================================================
-                print("DEBUG: Building COL API URL...")
-                
-                col_url = "https://api.checklistbank.org/dataset/3LR/nameusage/search"
+                # Build API request
+                api_url = f"{COL_API_BASE}/nameusage/search"
                 api_params = {
                     "q": query_params.search_term,
-                    "limit": min(query_params.limit or 5, 20),
-                    "content": "SCIENTIFIC_NAME"
+                    "limit": query_params.limit,
+                    "content": "SCIENTIFIC_NAME",
+                    "type": "TAXON"
                 }
                 
-                # Construct full URL for logging
-                full_url = f"{col_url}?{urlencode(api_params)}"
+                # Make API request
+                data = await self._make_api_request(api_url, api_params)
                 
-                print(f"DEBUG: API URL: {col_url}")
-                print(f"DEBUG: API Params: {api_params}")
-                print(f"DEBUG: Full URL: {full_url}")
-                
-                # LOG 2: API Query with full URL
-                await process.log(
-                    "API Query",
-                    data={
-                        "endpoint": col_url,
-                        "parameters": api_params,
-                        "full_url": full_url
-                    }
-                )
-                
-                # ============================================================
-                # STEP 7: Run API query, collect response
-                # ============================================================
-                print("DEBUG: Executing COL API request...")
-                
-                try:
-                    response = requests.get(col_url, params=api_params, timeout=10)
-                    print(f"DEBUG: API Response Status: {response.status_code}")
-                    print(f"DEBUG: API Response URL: {response.url}")
-                    
-                    if response.status_code != 200:
-                        error_msg = f"Catalogue of Life API error: HTTP {response.status_code}"
-                        print(f"DEBUG: {error_msg}")
-                        await process.log(f"API error: {error_msg}")
-                        await context.reply(error_msg)
-                        return
-                    
-                    # Parse JSON response
-                    try:
-                        data = response.json()
-                        print(f"DEBUG: Parsed JSON successfully")
-                        print(f"DEBUG: Response keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
-                        
-                    except json.JSONDecodeError as json_error:
-                        print(f"DEBUG: JSON decode error: {json_error}")
-                        await process.log("Failed to parse JSON response")
-                        await context.reply("Error: Invalid response from Catalogue of Life API")
-                        return
-                    
-                except requests.RequestException as req_error:
-                    print(f"DEBUG: Request error: {req_error}")
-                    await process.log(f"Network error: {str(req_error)}")
-                    await context.reply("Error: Could not connect to Catalogue of Life API")
-                    return
-                
-                # ============================================================
-                # STEP 8: Extract/derive summary material from response
-                # ============================================================
+                # Process results
                 results = data.get("result", [])
                 total = data.get("total", 0)
                 
-                print(f"DEBUG: Found {len(results)} results out of {total} total")
-                
-                if len(results) == 0:
-                    await process.log("No results found")
-                    no_results_msg = (
-                        f"No species found for '{query_params.search_term}' in Catalogue of Life.\n\n"
-                        f"**Suggestions:**\n"
-                        f"- Try using a scientific name (e.g., 'Panthera tigris' instead of 'tiger')\n"
-                        f"- Check spelling\n"
-                        f"- Use a broader search term (e.g., genus instead of species)\n"
-                        f"- Try common English names for well-known species"
-                    )
-                    print(f"DEBUG: {no_results_msg}")
-                    await context.reply(no_results_msg)
-                    return
-                
-                # Extract and structure data from results
-                print("DEBUG: Extracting and formatting results...")
-                
-                formatted_results = []
-                
-                for i, item in enumerate(results[:5], 1):
-                    try:
-                        print(f"DEBUG: Processing result {i}...")
-                        
-                        # Extract taxon ID
-                        taxon_id = item.get("id", "")
-                        
-                        # Extract from correct nested structure
-                        usage = item.get("usage", {})
-                        name_obj = usage.get("name", {})
-                        
-                        scientific_name = name_obj.get("scientificName", "Unknown")
-                        rank = name_obj.get("rank", "Unknown")
-                        status = usage.get("status", "Unknown")
-                        
-                        # Extract classification hierarchy
-                        classification = item.get("classification", [])
-                        taxonomy = {}
-                        
-                        desired_ranks = ["domain", "kingdom", "phylum", "class", "order", "family", "genus", "species"]
-                        
-                        if classification:
-                            for taxon in classification:
-                                taxon_rank = taxon.get("rank", "").lower()
-                                taxon_name = taxon.get("name", "")
-                                if taxon_rank in desired_ranks and taxon_name:
-                                    taxonomy[taxon_rank] = taxon_name
-                        
-                        result_info = {
-                            "id": taxon_id,
-                            "scientificName": scientific_name,
-                            "rank": rank,
-                            "status": status,
-                            "taxonomy": taxonomy
-                        }
-                        formatted_results.append(result_info)
-                        
-                    except Exception as item_error:
-                        print(f"DEBUG: Error processing result {i}: {item_error}")
-                        continue
-                
-                # LOG 3: Results summary with top results
-                top_results_summary = [
-                    {
-                        "id": r["id"],
-                        "scientific_name": r["scientificName"],
-                        "rank": r["rank"],
-                        "status": r["status"]
-                    }
-                    for r in formatted_results
-                ]
-                
-                await process.log(
-                    f"Results: Found {total} matches, showing top {len(formatted_results)}",
-                    data={"results": top_results_summary}
-                )
-                
-                # ============================================================
-                # STEP 9: Generate response
-                # ============================================================
-                print("DEBUG: Generating response...")
-                
-                if len(formatted_results) == 1:
-                    main_result = formatted_results[0]
-                    result_scientific_name = main_result['scientificName']
-                    reply_text = f"Found {result_scientific_name} ({main_result['rank']}, {main_result['status']}). "
-                    
-                    query_lower = query_params.search_term.lower()
-                    result_name_lower = result_scientific_name.lower()
-                    
-                    if (len(query_lower) > 3 and 
-                        query_lower not in result_name_lower and 
-                        result_name_lower.split()[0].lower() != query_lower):
-                        
-                        reply_text += f"\n\nNote: This result may not match your search for '{query_params.search_term}'. "
-                        reply_text += "The COL API searches broadly (including author names and references). "
-                        reply_text += "For better results, try using the scientific name (e.g., 'Panthera leo' for lion). "
-                    
-                elif len(formatted_results) > 1:
-                    reply_text = f"Found {total} matches for '{query_params.search_term}'. "
-                    reply_text += f"Top result: {formatted_results[0]['scientificName']} ({formatted_results[0]['rank']}). "
-                else:
-                    reply_text = f"Found {total} matches. "
-                
-                reply_text += "See artifact for complete taxonomic data."
-                
-                # Create artifact with complete data
-                print("DEBUG: Creating artifact...")
-                
-                artifact_data = {
-                    "search_info": {
-                        "query": query_params.search_term,
-                        "original_request": request,
-                        "total_found": total,
-                        "showing": len(formatted_results),
-                        "api_url": response.url
-                    },
-                    "results": formatted_results,
-                    "raw_response": data
-                }
-                
-                try:
-                    await process.create_artifact(
-                        mimetype="application/json",
-                        description=f"COL search results for '{query_params.search_term}' - {len(formatted_results)} of {total} results",
-                        content=json.dumps(artifact_data, indent=2).encode('utf-8'),
-                        uris=[response.url],
-                        metadata={
-                            "data_source": "Catalogue of Life",
-                            "query": query_params.search_term,
-                            "total_found": total,
-                            "results_count": len(formatted_results),
-                            "api_endpoint": col_url
-                        }
-                    )
-                    print("DEBUG: Artifact created successfully")
-                    
-                except Exception as artifact_error:
-                    print(f"DEBUG: Failed to create artifact: {artifact_error}")
-                    await process.log(f"Failed to create artifact: {str(artifact_error)}")
-                
-                # Send final response
-                print("DEBUG: Sending final response to user")
-                await context.reply(reply_text)
-                print("DEBUG: Response sent successfully!")
-                await process.log("Response sent to user")
-                
-            except Exception as e:
-                error_msg = f"Unexpected error during search: {str(e)}"
-                print(f"DEBUG: MAJOR ERROR: {error_msg}")
-                print(f"DEBUG: Traceback: {traceback.format_exc()}")
-                
-                await process.log(f"Error occurred: {error_msg}")
-                await context.reply(
-                    f"Sorry, an error occurred while searching Catalogue of Life.\n\n"
-                    f"**Error:** {str(e)}\n\n"
-                    f"**Suggestions:**\n"
-                    f"- Try rephrasing your search query\n"
-                    f"- Check your internet connection\n"
-                    f"- Try again in a few moments"
-                )
-
-    async def _handle_taxon_details(self, context: ResponseContext, request: str, params: TaxonDetailsParameters):
-        """Handle the get_taxon_details entrypoint"""
-        async with context.begin_process(summary="Fetching taxon details") as process:
-            process: IChatBioAgentProcess
-            
-            try:
-                taxon_id = params.taxon_id.strip()
-                
-                # LOG 1: Request initiated
-                await process.log(f"Fetching details for taxon ID: '{taxon_id}'")
-                print(f"DEBUG: Fetching taxon details for ID: {taxon_id}")
-                
-                # Build API URL
-                col_url = f"https://api.checklistbank.org/dataset/3LR/taxon/{taxon_id}"
-                
-                print(f"DEBUG: API URL: {col_url}")
-                
-                # LOG 2: API Query
-                await process.log(
-                    "API Query",
-                    data={"endpoint": col_url}
-                )
-                
-                # Execute API request
-                print("DEBUG: Executing COL API request...")
-                
-                try:
-                    response = requests.get(col_url, timeout=10)
-                    print(f"DEBUG: API Response Status: {response.status_code}")
-                    
-                    if response.status_code == 404:
-                        await process.log("Taxon ID not found")
-                        await context.reply(f"Taxon ID '{taxon_id}' not found in Catalogue of Life. Please check the ID and try again.")
-                        return
-                    
-                    if response.status_code != 200:
-                        error_msg = f"Catalogue of Life API error: HTTP {response.status_code}"
-                        print(f"DEBUG: {error_msg}")
-                        await process.log(f"API error: {error_msg}")
-                        await context.reply(error_msg)
-                        return
-                    
-                    data = response.json()
-                    print(f"DEBUG: Parsed JSON successfully")
-                    
-                except requests.RequestException as req_error:
-                    print(f"DEBUG: Request error: {req_error}")
-                    await process.log(f"Network error: {str(req_error)}")
-                    await context.reply("Error: Could not connect to Catalogue of Life API")
-                    return
-                except json.JSONDecodeError:
-                    print(f"DEBUG: JSON decode error")
-                    await process.log("Failed to parse API response")
-                    await context.reply("Error: Invalid response from Catalogue of Life API")
-                    return
+                await process.log(f"Found {total} results, processing top {len(results)}")
                 
                 # Extract taxon information
-                print("DEBUG: Extracting taxon details...")
-                
-                name_obj = data.get("name", {})
-                scientific_name = name_obj.get("scientificName", "Unknown")
-                authorship = name_obj.get("authorship", "")
-                rank = name_obj.get("rank", "Unknown")
-                status = data.get("status", "Unknown")
-                
-                # Extract classification
-                classification = data.get("classification", [])
-                taxonomy = {}
-                
-                desired_ranks = ["domain", "kingdom", "phylum", "class", "order", "family", "genus", "species"]
-                
-                for taxon in classification:
-                    taxon_rank = taxon.get("rank", "").lower()
-                    taxon_name = taxon.get("name", "")
-                    if taxon_rank in desired_ranks and taxon_name:
-                        taxonomy[taxon_rank] = taxon_name
-                
-                # Extract additional details
-                extinct = data.get("extinct", False)
-                environments = data.get("environments", [])
-                link = data.get("link", "")
-                
-                # LOG 3: Details retrieved
-                await process.log(
-                    f"Retrieved details for: {scientific_name}",
-                    data={
-                        "scientific_name": scientific_name,
-                        "rank": rank,
-                        "status": status,
-                        "extinct": extinct
-                    }
-                )
-                
-                # Build reply
-                full_name = f"{scientific_name} {authorship}".strip()
-                reply_text = f"**{full_name}**\n\n"
-                reply_text += f"**Rank:** {rank}\n"
-                reply_text += f"**Status:** {status}\n"
-                
-                if extinct:
-                    reply_text += f"**Extinct:** Yes ☠️\n"
-                
-                if environments:
-                    reply_text += f"**Environments:** {', '.join(environments)}\n"
-                
-                if taxonomy:
-                    reply_text += f"\n**Complete Taxonomic Classification:**\n"
-                    for rank_name in ["domain", "kingdom", "phylum", "class", "order", "family", "genus", "species"]:
-                        if rank_name in taxonomy:
-                            reply_text += f"- {rank_name.capitalize()}: {taxonomy[rank_name]}\n"
-                            
-                col_page = f"https://www.checklistbank.org/dataset/3LR/taxon/{taxon_id}"
-                reply_text += f"\n**Catalogue of Life Page:** {col_page}\n"
-                
-                if link:
-                    reply_text += f"**Original Data Source:** {link}\n"
-                
-                reply_text += f"\nSee artifact for complete data including references and additional details."
-                
-                # Create artifact
-                print("DEBUG: Creating artifact...")
-                
-                artifact_data = {
-                    "taxon_info": {
-                        "id": taxon_id,
-                        "scientific_name": scientific_name,
-                        "authorship": authorship,
-                        "rank": rank,
-                        "status": status,
-                        "extinct": extinct,
-                        "environments": environments,
-                        "link": link
-                    },
-                    "taxonomy": taxonomy,
-                    "raw_response": data
-                }
-                
-                try:
-                    await process.create_artifact(
-                        mimetype="application/json",
-                        description=f"Complete taxon details for {scientific_name}",
-                        content=json.dumps(artifact_data, indent=2).encode('utf-8'),
-                        uris=[link] if link else [col_url],
-                        metadata={
-                            "data_source": "Catalogue of Life",
-                            "taxon_id": taxon_id,
-                            "scientific_name": scientific_name,
-                            "rank": rank
-                        }
-                    )
-                    print("DEBUG: Artifact created successfully")
-                    
-                except Exception as artifact_error:
-                    print(f"DEBUG: Failed to create artifact: {artifact_error}")
-                    await process.log(f"Failed to create artifact: {str(artifact_error)}")
-                
-                # Send response
-                print("DEBUG: Sending response to user")
-                await context.reply(reply_text)
-                await process.log("Response sent to user")
-                print("DEBUG: Response sent successfully!")
-                
-            except Exception as e:
-                error_msg = f"Unexpected error fetching taxon details: {str(e)}"
-                print(f"DEBUG: MAJOR ERROR: {error_msg}")
-                print(f"DEBUG: Traceback: {traceback.format_exc()}")
-                
-                await process.log(f"Error occurred: {error_msg}")
-                await context.reply(
-                    f"Sorry, an error occurred while fetching taxon details.\n\n"
-                    f"**Error:** {str(e)}\n\n"
-                    f"Please check the taxon ID and try again."
-                )
-
-    async def _handle_get_synonyms(self, context: ResponseContext, request: str, params: GetSynonymsParameters):
-        """Handle the get_synonyms entrypoint - accepts name or ID"""
-        async with context.begin_process(summary="Fetching synonyms") as process:
-            process: IChatBioAgentProcess
-            
-            try:
-                query = params.query.strip()
-                taxon_id = None
-                scientific_name = None
-                
-                # Determine if input is a taxon ID (short alphanumeric) or scientific name (has spaces/longer)
-                is_likely_id = len(query) < 10 and " " not in query and not query[0].isupper()
-                
-                if is_likely_id:
-                    # Treat as taxon ID
-                    taxon_id = query
-                    await process.log(f"Using taxon ID: '{taxon_id}'")
-                    print(f"DEBUG: Input identified as taxon ID: {taxon_id}")
-                else:
-                    # Treat as scientific name - need to search for it first
-                    await process.log(f"Searching for scientific name: '{query}'")
-                    print(f"DEBUG: Input identified as scientific name: {query}")
-                    
-                    # Search for the species to get its taxon ID
-                    search_url = "https://api.checklistbank.org/dataset/3LR/nameusage/search"
-                    search_params = {
-                        "q": query,
-                        "limit": 1,
-                        "content": "SCIENTIFIC_NAME"
-                    }
-                    
+                taxon_list = []
+                for item in results[:query_params.limit]:
                     try:
-                        search_response = requests.get(search_url, params=search_params, timeout=10)
-                        
-                        if search_response.status_code != 200:
-                            await process.log(f"Search failed: HTTP {search_response.status_code}")
-                            await context.reply(f"Could not search for '{query}'. Please check the name and try again.")
-                            return
-                        
-                        search_data = search_response.json()
-                        results = search_data.get("result", [])
-                        
-                        if len(results) == 0:
-                            await process.log("No matching species found")
-                            await context.reply(f"No species found for '{query}'. Please check the spelling or try the scientific name.")
-                            return
-                        
-                        # Get the first result (most relevant)
-                        first_result = results[0]
-                        taxon_id = first_result.get("id")
-                        usage = first_result.get("usage", {})
-                        name_obj = usage.get("name", {})
-                        scientific_name = name_obj.get("scientificName", query)
-                        
-                        await process.log(f"Found taxon: {scientific_name} (ID: {taxon_id})")
-                        print(f"DEBUG: Found taxon ID: {taxon_id} for name: {scientific_name}")
-                        
-                    except requests.RequestException as search_error:
-                        print(f"DEBUG: Search error: {search_error}")
-                        await process.log(f"Search error: {str(search_error)}")
-                        await context.reply("Error: Could not search for species")
-                        return
-                    except json.JSONDecodeError:
-                        await process.log("Failed to parse search response")
-                        await context.reply("Error: Invalid search response")
-                        return
-                
-                if not taxon_id:
-                    await context.reply("Could not determine taxon ID. Please try again.")
-                    return
-                
-                # Now fetch synonyms using the taxon ID
-                col_url = f"https://api.checklistbank.org/dataset/3LR/taxon/{taxon_id}/synonyms"
-                
-                print(f"DEBUG: Fetching synonyms from: {col_url}")
-                
-                # LOG: API Query
-                await process.log(
-                    "API Query",
-                    data={
-                        "endpoint": col_url,
-                        "taxon_id": taxon_id
-                    }
-                )
-                
-                # Execute API request
-                print("DEBUG: Executing COL API request...")
-                
-                try:
-                    response = requests.get(col_url, timeout=10)
-                    print(f"DEBUG: API Response Status: {response.status_code}")
-                    
-                    if response.status_code == 404:
-                        await process.log("Taxon ID not found")
-                        await context.reply(f"Taxon ID '{taxon_id}' not found. The species may not have synonym data available.")
-                        return
-                    
-                    if response.status_code != 200:
-                        error_msg = f"Catalogue of Life API error: HTTP {response.status_code}"
-                        print(f"DEBUG: {error_msg}")
-                        await process.log(f"API error: {error_msg}")
-                        await context.reply(error_msg)
-                        return
-                    
-                    data = response.json()
-                    print(f"DEBUG: Parsed JSON successfully")
-                    synonyms_data = data.get("heterotypic", [])
-                    print(f"DEBUG: Number of synonyms: {len(synonyms_data)}")
-                    
-                except requests.RequestException as req_error:
-                    print(f"DEBUG: Request error: {req_error}")
-                    await process.log(f"Network error: {str(req_error)}")
-                    await context.reply("Error: Could not connect to Catalogue of Life API")
-                    return
-                except json.JSONDecodeError:
-                    print(f"DEBUG: JSON decode error")
-                    await process.log("Failed to parse API response")
-                    await context.reply("Error: Invalid response from Catalogue of Life API")
-                    return
-                
-                # Check if there are any synonyms
-                if not synonyms_data or len(synonyms_data) == 0:
-                    await process.log("No synonyms found")
-                    display_name = scientific_name if scientific_name else f"taxon ID '{taxon_id}'"
-                    await context.reply(f"No synonyms found for {display_name}. This may be the currently accepted name with no alternative names.")
-                    return
-                
-                # Extract synonym information
-                print("DEBUG: Extracting synonym details...")
-                
-                synonyms_list = []
-                
-                for item in synonyms_data:
-                    try:
-                        name_obj = item.get("name", {})
-                        syn_scientific_name = name_obj.get("scientificName", "Unknown")
-                        authorship = name_obj.get("authorship", "")
-                        rank = name_obj.get("rank", "Unknown")
-                        status = item.get("status", "Unknown")
-                        
-                        synonym_info = {
-                            "scientificName": syn_scientific_name,
-                            "authorship": authorship,
-                            "rank": rank,
-                            "status": status
-                        }
-                        synonyms_list.append(synonym_info)
-                        
-                    except Exception as item_error:
-                        print(f"DEBUG: Error processing synonym: {item_error}")
+                        taxon_info = self._extract_taxon_info(item, item.get("id"))
+                        taxon_list.append(taxon_info)
+                    except Exception as e:
+                        logger.warning(f"Failed to process result: {e}")
                         continue
                 
-                # LOG: Synonyms retrieved
-                synonyms_summary = [
-                    {
-                        "scientific_name": s["scientificName"],
-                        "status": s["status"]
-                    }
-                    for s in synonyms_list[:10]  # Show first 10 in log
-                ]
+                # Format response
+                response_text = self._format_search_results(taxon_list, total, query_params.search_term)
                 
-                await process.log(
-                    f"Found {len(synonyms_list)} synonyms",
-                    data={"synonyms": synonyms_summary}
+                # Create artifact with detailed data
+                artifact_data = {
+                    "search_metadata": {
+                        "original_query": params.query,
+                        "scientific_query": query_params.search_term,
+                        "total_results": total,
+                        "returned_results": len(taxon_list),
+                        "api_endpoint": api_url
+                    },
+                    "results": [
+                        {
+                            "id": t.id,
+                            "scientific_name": t.scientific_name,
+                            "authorship": t.authorship,
+                            "rank": t.rank,
+                            "status": t.status,
+                            "extinct": t.extinct,
+                            "col_url": t.col_url,
+                            "taxonomy": t.taxonomy
+                        }
+                        for t in taxon_list
+                    ]
+                }
+                
+                await process.create_artifact(
+                    mimetype="application/json",
+                    description=f"Search results for '{query_params.search_term}'",
+                    content=json.dumps(artifact_data, indent=2).encode('utf-8'),
+                    metadata={
+                        "source": "Catalogue of Life",
+                        "query": query_params.search_term,
+                        "result_count": len(taxon_list)
+                    }
                 )
                 
-                # Build reply
-                display_name = scientific_name if scientific_name else f"taxon ID {taxon_id}"
-                reply_text = f"**Found {len(synonyms_list)} synonym(s) for {display_name}:**\n\n"
+                await context.reply(response_text)
                 
-                for i, synonym in enumerate(synonyms_list, 1):
-                    full_name = f"{synonym['scientificName']} {synonym['authorship']}".strip()
-                    reply_text += f"{i}. *{full_name}*\n"
-                    reply_text += f"   - Rank: {synonym['rank']}\n"
-                    reply_text += f"   - Status: {synonym['status']}\n\n"
+            except APIError as e:
+                await process.log(f"API error: {str(e)}")
+                await context.reply(f"Search failed: {str(e)}")
+            except Exception as e:
+                logger.error(f"Unexpected error in search: {e}")
+                await context.reply("An unexpected error occurred during search. Please try again.")
+    
+    async def _handle_taxon_details(self, context: ResponseContext, request: str, params: TaxonDetailsParameters):
+        """Handle requests for detailed taxon information"""
+        async with context.begin_process(summary="Fetching taxon details") as process:
+            try:
+                taxon_id = params.taxon_id
+                await process.log(f"Retrieving details for taxon ID: {taxon_id}")
                 
-                reply_text += f"\nSee artifact for complete synonym data."
+                # Make API request
+                api_url = f"{COL_API_BASE}/taxon/{taxon_id}"
+                data = await self._make_api_request(api_url)
+                
+                # Extract taxon information
+                taxon_info = self._extract_taxon_info(data, taxon_id)
+                
+                # Build detailed response
+                response_lines = [
+                    f"**{taxon_info.scientific_name}**",
+                    f"Author: {taxon_info.authorship}" if taxon_info.authorship else None,
+                    f"Rank: {taxon_info.rank}",
+                    f"Status: {taxon_info.status}",
+                    f"Extinct: Yes" if taxon_info.extinct else None,
+                    "",
+                    "**Taxonomic Classification:**"
+                ]
+                
+                # Add taxonomy
+                if taxon_info.taxonomy:
+                    for rank in TAXONOMIC_RANKS:
+                        if rank in taxon_info.taxonomy:
+                            response_lines.append(f"- {rank.title()}: {taxon_info.taxonomy[rank]}")
+                
+                response_lines.extend([
+                    "",
+                    f"**Catalogue of Life Page:** {taxon_info.col_url}",
+                    "",
+                    "See artifact for complete data."
+                ])
+                
+                # Filter out None values and join
+                response_text = "\n".join(line for line in response_lines if line is not None)
                 
                 # Create artifact
-                print("DEBUG: Creating artifact...")
+                artifact_data = {
+                    "taxon_details": {
+                        "id": taxon_info.id,
+                        "scientific_name": taxon_info.scientific_name,
+                        "authorship": taxon_info.authorship,
+                        "rank": taxon_info.rank,
+                        "status": taxon_info.status,
+                        "extinct": taxon_info.extinct,
+                        "col_url": taxon_info.col_url
+                    },
+                    "taxonomy": taxon_info.taxonomy,
+                    "raw_data": data
+                }
                 
+                await process.create_artifact(
+                    mimetype="application/json",
+                    description=f"Taxon details for {taxon_info.scientific_name}",
+                    content=json.dumps(artifact_data, indent=2).encode('utf-8'),
+                    metadata={
+                        "source": "Catalogue of Life",
+                        "taxon_id": taxon_id,
+                        "scientific_name": taxon_info.scientific_name
+                    }
+                )
+                
+                await context.reply(response_text)
+                
+            except APIError as e:
+                if "not found" in str(e).lower():
+                    await context.reply(
+                        f"Taxon ID '{params.taxon_id}' not found.\n\n"
+                        f"Possible reasons:\n"
+                        f"- The ID may be incorrect or outdated\n"
+                        f"- This might be a synonym ID rather than an accepted taxon\n"
+                        f"- The taxon may have been reclassified\n\n"
+                        f"Try using the search function to find the correct ID."
+                    )
+                else:
+                    await context.reply(f"Failed to retrieve taxon details: {str(e)}")
+            except Exception as e:
+                logger.error(f"Unexpected error in taxon details: {e}")
+                await context.reply("An unexpected error occurred. Please try again.")
+    
+    async def _handle_get_synonyms(self, context: ResponseContext, request: str, params: GetSynonymsParameters):
+        """Handle requests for taxonomic synonyms"""
+        async with context.begin_process(summary="Fetching synonyms") as process:
+            try:
+                query = params.query
+                
+                # Determine if query is a taxon ID or scientific name
+                is_taxon_id = len(query) < 10 and " " not in query and not query[0].isupper()
+                
+                if is_taxon_id:
+                    taxon_id = query
+                    await process.log(f"Using taxon ID: {taxon_id}")
+                else:
+                    # Search for the taxon ID
+                    await process.log(f"Searching for taxon: {query}")
+                    
+                    api_url = f"{COL_API_BASE}/nameusage/search"
+                    api_params = {
+                        "q": query,
+                        "limit": 1,
+                        "content": "SCIENTIFIC_NAME",
+                        "type": "TAXON"
+                    }
+                    
+                    data = await self._make_api_request(api_url, api_params)
+                    results = data.get("result", [])
+                    
+                    if not results:
+                        await context.reply(
+                            f"No taxon found for '{query}'.\n\n"
+                            f"Please verify the scientific name and try again."
+                        )
+                        return
+                    
+                    taxon_id = results[0].get("id")
+                
+                # Try to get synonyms
+                await process.log(f"Fetching synonyms for taxon ID: {taxon_id}")
+                
+                # First attempt: direct synonyms endpoint
+                try:
+                    api_url = f"{COL_API_BASE}/taxon/{taxon_id}/synonyms"
+                    data = await self._make_api_request(api_url)
+                    
+                    # Process synonyms
+                    synonyms = self._process_synonyms_response(data)
+                    
+                except APIError:
+                    # Fallback: search for all names
+                    await process.log("Direct synonyms endpoint failed, trying alternative method")
+                    synonyms = await self._find_synonyms_by_search(query, process)
+                
+                if not synonyms:
+                    await context.reply(
+                        f"No synonyms found for '{query}'.\n\n"
+                        f"This may be the currently accepted name with no recorded alternatives."
+                    )
+                    return
+                
+                # Format response
+                response_text = f"Found {len(synonyms)} synonym(s):\n\n"
+                
+                for i, syn in enumerate(synonyms[:10], 1):
+                    full_name = f"{syn['scientific_name']} {syn.get('authorship', '')}".strip()
+                    response_text += (
+                        f"{i}. **{full_name}**\n"
+                        f"   Status: {syn['status']}\n\n"
+                    )
+                
+                if len(synonyms) > 10:
+                    response_text += f"... and {len(synonyms) - 10} more.\n\n"
+                
+                response_text += f"COL Page: {COL_WEB_BASE}/{taxon_id}\n"
+                response_text += "See artifact for complete list."
+                
+                # Create artifact
                 artifact_data = {
                     "query": query,
                     "taxon_id": taxon_id,
-                    "scientific_name": scientific_name,
-                    "synonym_count": len(synonyms_list),
-                    "synonyms": synonyms_list,
-                    "raw_response": data
+                    "synonym_count": len(synonyms),
+                    "synonyms": synonyms,
+                    "col_url": f"{COL_WEB_BASE}/{taxon_id}"
                 }
                 
-                try:
-                    await process.create_artifact(
-                        mimetype="application/json",
-                        description=f"Synonyms for {scientific_name or taxon_id} - {len(synonyms_list)} total",
-                        content=json.dumps(artifact_data, indent=2).encode('utf-8'),
-                        uris=[col_url],
-                        metadata={
-                            "data_source": "Catalogue of Life",
-                            "taxon_id": taxon_id,
-                            "scientific_name": scientific_name or "Unknown",
-                            "synonym_count": len(synonyms_list)
-                        }
-                    )
-                    print("DEBUG: Artifact created successfully")
-                    
-                except Exception as artifact_error:
-                    print(f"DEBUG: Failed to create artifact: {artifact_error}")
-                    await process.log(f"Failed to create artifact: {str(artifact_error)}")
-                
-                # Send response
-                print("DEBUG: Sending response to user")
-                await context.reply(reply_text)
-                await process.log("Response sent to user")
-                print("DEBUG: Response sent successfully!")
-                
-            except Exception as e:
-                error_msg = f"Unexpected error fetching synonyms: {str(e)}"
-                print(f"DEBUG: MAJOR ERROR: {error_msg}")
-                print(f"DEBUG: Traceback: {traceback.format_exc()}")
-                
-                await process.log(f"Error occurred: {error_msg}")
-                await context.reply(
-                    f"Sorry, an error occurred while fetching synonyms.\n\n"
-                    f"**Error:** {str(e)}\n\n"
-                    f"Please try again."
+                await process.create_artifact(
+                    mimetype="application/json",
+                    description=f"Synonyms list - {len(synonyms)} entries",
+                    content=json.dumps(artifact_data, indent=2).encode('utf-8'),
+                    metadata={
+                        "source": "Catalogue of Life",
+                        "synonym_count": len(synonyms)
+                    }
                 )
-
+                
+                await context.reply(response_text)
+                
+            except APIError as e:
+                await process.log(f"API error: {str(e)}")
+                await context.reply(f"Failed to retrieve synonyms: {str(e)}")
+            except Exception as e:
+                logger.error(f"Unexpected error in synonyms: {e}")
+                await context.reply("An unexpected error occurred. Please try again.")
+    
+    def _process_synonyms_response(self, data: Any) -> List[Dict[str, Any]]:
+        """Process various synonym response formats"""
+        synonyms = []
+        
+        # Handle different response structures
+        if isinstance(data, dict):
+            items = data.get("result", data.get("heterotypic", []))
+        elif isinstance(data, list):
+            items = data
+        else:
+            return synonyms
+        
+        for item in items:
+            if isinstance(item, dict):
+                name_obj = item.get("name", item)
+                synonyms.append({
+                    "scientific_name": name_obj.get("scientificName", "Unknown"),
+                    "authorship": name_obj.get("authorship", ""),
+                    "status": item.get("status", "synonym")
+                })
+        
+        return synonyms
+    
+    async def _find_synonyms_by_search(self, query: str, process: IChatBioAgentProcess) -> List[Dict[str, Any]]:
+        """Alternative method to find synonyms through search"""
+        api_url = f"{COL_API_BASE}/nameusage/search"
+        api_params = {
+            "q": query,
+            "limit": 50,
+            "content": "SCIENTIFIC_NAME"
+        }
+        
+        try:
+            data = await self._make_api_request(api_url, api_params)
+            results = data.get("result", [])
+            
+            synonyms = []
+            for item in results:
+                usage = item.get("usage", {})
+                status = usage.get("status", "").lower()
+                
+                if status in ["synonym", "ambiguous synonym", "provisional"]:
+                    name_obj = usage.get("name", {})
+                    synonyms.append({
+                        "scientific_name": name_obj.get("scientificName", "Unknown"),
+                        "authorship": name_obj.get("authorship", ""),
+                        "status": usage.get("status", "Unknown")
+                    })
+            
+            return synonyms
+            
+        except APIError:
+            return []
+    
     @override
     async def run(self, context: ResponseContext, request: str, entrypoint: str, params: Union[SearchParameters, TaxonDetailsParameters, GetSynonymsParameters]):
-        """
-        Main agent entry point - routes to appropriate handler based on entrypoint
-        """
-        print(f"\nDEBUG: Agent.run() called!")
-        print(f"DEBUG: Entrypoint: {entrypoint}")
-        print(f"DEBUG: Request: {request}")
-        print(f"DEBUG: Params: {params}")
+        """Main entry point routing requests to appropriate handlers"""
+        logger.info(f"Processing request - Entrypoint: {entrypoint}, Request: {request}")
         
-        # Validate entrypoint
-        if entrypoint not in ["search", "get_taxon_details", "get_synonyms"]:
-            error_msg = f"Unknown entrypoint: {entrypoint}. Expected 'search', 'get_taxon_details', or 'get_synonyms'"
-            print(f"DEBUG: {error_msg}")
-            await context.reply(error_msg)
+        handlers = {
+            "search": self._handle_search,
+            "get_taxon_details": self._handle_taxon_details,
+            "get_synonyms": self._handle_get_synonyms
+        }
+        
+        handler = handlers.get(entrypoint)
+        if not handler:
+            await context.reply(f"Unknown entrypoint: {entrypoint}")
             return
-
-        # Route to appropriate handler
-        if entrypoint == "search":
-            await self._handle_search(context, request, params)
-        elif entrypoint == "get_taxon_details":
-            await self._handle_taxon_details(context, request, params)
-        elif entrypoint == "get_synonyms":
-            await self._handle_get_synonyms(context, request, params)
+        
+        await handler(context, request, params)
 
 
-# Test the agent locally before running the server
+def validate_environment():
+    """Validate required environment variables"""
+    required_vars = ["OPENAI_API_KEY"]
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
+    
+    if missing_vars:
+        logger.error(f"Missing required environment variables: {', '.join(missing_vars)}")
+        return False
+    return True
+
+
 def test_agent():
-    """Test function to verify agent works before starting server"""
-    print("\nTESTING AGENT LOCALLY...")
+    """Test agent initialization"""
+    logger.info("Testing agent initialization...")
     
     try:
         agent = CatalogueOfLifeAgent()
         card = agent.get_agent_card()
-        print(f"TEST: Agent card created successfully")
-        print(f"TEST: Agent name: {card.name}")
-        print(f"TEST: Entrypoints: {[ep.id for ep in card.entrypoints]}")
+        
+        logger.info(f"Agent initialized successfully")
+        logger.info(f"Agent name: {card.name}")
+        logger.info(f"Endpoints: {', '.join(ep.id for ep in card.entrypoints)}")
+        
         return True
+        
     except Exception as e:
-        print(f"TEST FAILED: {e}")
-        print(f"TRACEBACK: {traceback.format_exc()}")
+        logger.error(f"Agent test failed: {e}")
+        logger.error(traceback.format_exc())
         return False
 
 
 if __name__ == "__main__":
-    print("Starting Catalogue of Life Agent...")
-    
-    # Test the agent first
-    if not test_agent():
-        print("Agent test failed! Fix errors before starting server.")
+    # Validate environment
+    if not validate_environment():
+        logger.error("Environment validation failed. Please check your .env file.")
         exit(1)
     
-    print("Agent test passed! Starting server...")
+    # Test agent
+    if not test_agent():
+        logger.error("Agent test failed. Please check the error messages above.")
+        exit(1)
+    
+    # Start server
+    logger.info("Starting Catalogue of Life Agent server...")
     
     try:
         from ichatbio.server import run_agent_server
         
         agent = CatalogueOfLifeAgent()
         
-        print("Server starting on: http://localhost:9999")
-        print("Agent card will be at: http://localhost:9999/.well-known/agent.json")
-        print("Test the API manually: https://api.checklistbank.org/dataset/3LR/nameusage/search?q=tiger")
-        print("Press Ctrl+C to stop")
+        logger.info("Server configuration:")
+        logger.info("- Host: 0.0.0.0")
+        logger.info("- Port: 9999")
+        logger.info("- Agent card: http://localhost:9999/.well-known/agent.json")
+        logger.info("Press Ctrl+C to stop")
         
         run_agent_server(agent, host="0.0.0.0", port=9999)
         
+    except KeyboardInterrupt:
+        logger.info("Server shutdown requested")
     except Exception as e:
-        print(f"SERVER ERROR: {e}")
-        print(f"TRACEBACK: {traceback.format_exc()}")
+        logger.error(f"Server error: {e}")
+        logger.error(traceback.format_exc())
