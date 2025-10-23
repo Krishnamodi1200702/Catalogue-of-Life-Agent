@@ -55,10 +55,10 @@ class CoLQueryParams(BaseModel):
         examples=["Panthera leo", "tiger", "Homo sapiens"]
     )
     limit: Optional[int] = Field(
-        5, 
-        description="Number of results (max 20)",
+        1000, 
+        description="Number of results (max 1000)",
         ge=1,
-        le=20
+        le=1000
     )
 
 # STEP 1: Explore their data - Response models for API data
