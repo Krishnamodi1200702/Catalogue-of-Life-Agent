@@ -26,7 +26,7 @@ print(f"DEBUG: OPENAI_BASE_URL: {os.getenv('OPENAI_BASE_URL', 'Not set')}")
 class SearchParameters(BaseModel):
     """User-facing parameters for the search entrypoint"""
     query: str = Field(
-        description="What to search for in Catalogue of Life",
+        description="Search for species by scientific name only. Common names are not supported. This agent requires scientific names (e.g., 'Ursidae' for bears, 'Panthera leo' for lions).",
         examples=["tiger", "Panthera leo", "oak tree"]
     )
 
@@ -40,7 +40,7 @@ class TaxonDetailsParameters(BaseModel):
 class GetSynonymsParameters(BaseModel):
     """Parameters for getting synonyms of a taxon"""
     query: str = Field(
-        description="Scientific name (e.g., 'Panthera leo') OR taxon ID (e.g., '4CGXP') to get synonyms for",
+        description="Get all synonyms for a taxon using its scientific name or taxon ID. Common names are not supported.",
         examples=["Panthera leo", "4CGXP", "Homo sapiens", "4CGXS"]
     )
 
@@ -104,7 +104,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             entrypoints=[
                 AgentEntrypoint(
                     id="search",
-                    description="Search for species or taxonomic information",
+                    description="Search for species or taxonomic information for scientific names",
                     parameters=SearchParameters
                 ),
                 AgentEntrypoint(
@@ -114,7 +114,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 ),
                 AgentEntrypoint(
                     id="get_synonyms",
-                    description="Get all synonyms (alternative scientific names) for a specific taxon using either its scientific name or taxon ID",
+                    description="Common names are not supported, use scientific names for a specific taxon using either its scientific name or taxon ID",
                     parameters=GetSynonymsParameters
                 )
             ]
@@ -143,25 +143,13 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 Your task: Convert the user's query into the BEST search term.
                 
                 CRITICAL RULES:
-                1. If the user gives a common name, YOU MUST convert it to the scientific name:
-                   - "lion" → "Panthera leo"
-                   - "tiger" → "Panthera tigris" 
-                   - "elephant" → "Loxodonta africana" OR "Elephas maximus"
-                   - "human" → "Homo sapiens"
-                   - "dog" → "Canis lupus familiaris"
-                   - "cat" → "Felis catus"
-                   - "polar bear" → "Ursus maritimus"
-                   - "bald eagle" → "Haliaeetus leucocephalus"
-                   
-                2. If the user already gives a scientific name, keep it as-is:
+                1. If the user already gives a scientific name, keep it as-is:
                    - "Panthera leo" → "Panthera leo"
                    - "Homo sapiens" → "Homo sapiens"
                    
-                3. If the user gives a genus name, keep it:
+                2. If the user gives a genus name, keep it:
                    - "Panthera" → "Panthera"
                    - "Homo" → "Homo"
-                   
-                4. If you don't know the scientific name for a common name, use the common name
                 
                 Return ONLY the search term, nothing else.
                 """
@@ -202,7 +190,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 col_url = "https://api.checklistbank.org/dataset/3LR/nameusage/search"
                 api_params = {
                     "q": query_params.search_term,
-                    "limit": min(query_params.limit or 5, 20),
+                    "limit": min(query_params.limit or 1000, 20),
                     "content": "SCIENTIFIC_NAME"
                 }
                 
