@@ -46,7 +46,7 @@ class GetSynonymsParameters(BaseModel):
 
 class GetVernacularNamesParameters(BaseModel):
     """Parameters for getting vernacular (common) names of a taxon"""
-    query: str = Field(
+    taxon_id: str = Field(
         description="Catalogue of Life taxon ID (e.g., '4CGXP') OR scientific name (e.g., 'Panthera leo') to get common names",
         examples=["4CGXP", "Panthera leo", "5K5L5", "Homo sapiens"]
     )
