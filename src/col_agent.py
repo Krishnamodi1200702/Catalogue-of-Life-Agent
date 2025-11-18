@@ -26,40 +26,40 @@ print(f"DEBUG: OPENAI_BASE_URL: {os.getenv('OPENAI_BASE_URL', 'Not set')}")
 class SearchParameters(BaseModel):
     """User-facing parameters for the search entrypoint"""
     query: str = Field(
-        description="What to search for in Catalogue of Life",
-        examples=["tiger", "Panthera leo", "oak tree"]
+        description="Scientific name to search (e.g., 'Panthera leo', 'Homo sapiens'). Common names like 'lion' or 'tiger' are NOT supported.",
+        examples=["Panthera leo", "Homo sapiens", "Quercus", "Canis lupus"]
     )
 
 class TaxonDetailsParameters(BaseModel):
     """Get detailed information for a specific taxon using its Catalogue of Life ID"""
     taxon_id: str = Field(
-        description="Catalogue of Life taxon ID (alphanumeric code from search results like '4CGXP', '5K5L5'). This ID must be from a COL search result.",
-        examples=["4CGXP", "5K5L5", "9BBLS", "3T", "4CGXS"]
+        description="Catalogue of Life taxon ID (alphanumeric code from search results like '4CGXP', '5K5L5') OR scientific name (e.g., 'Panthera leo')",
+        examples=["4CGXP", "5K5L5", "Panthera leo", "Homo sapiens"]
     )
 
 class GetSynonymsParameters(BaseModel):
     """Parameters for getting synonyms of a taxon"""
     query: str = Field(
-        description="Scientific name (e.g., 'Panthera leo') OR taxon ID (e.g., '4CGXP') to get synonyms for",
+        description="Scientific name (e.g., 'Panthera leo') OR taxon ID (e.g., '4CGXP') to get synonyms for. Common names NOT supported.",
         examples=["Panthera leo", "4CGXP", "Homo sapiens", "4CGXS"]
     )
 
 class GetVernacularNamesParameters(BaseModel):
     """Parameters for getting vernacular (common) names of a taxon"""
-    taxon_id: str = Field(
-        description="Catalogue of Life taxon ID (alphanumeric code like '4CGXP', '5K5L5'). This ID must be from a COL search result.",
-        examples=["4CGXP", "5K5L5", "9BBLS", "3T", "4CGXS"]
+    query: str = Field(
+        description="Catalogue of Life taxon ID (e.g., '4CGXP') OR scientific name (e.g., 'Panthera leo') to get common names",
+        examples=["4CGXP", "Panthera leo", "5K5L5", "Homo sapiens"]
     )
 
-# STEP 3 & 4: Data model with validation for GPT to extract search terms
+# STEP 3 & 4: Data model with validation for COL API queries
 class CoLQueryParams(BaseModel):
     """Validated parameters for COL API queries"""
     search_term: str = Field(
         ..., 
-        description="Scientific or common name to search for",
+        description="Scientific name to search for",
         min_length=2,
         max_length=100,
-        examples=["Panthera leo", "tiger", "Homo sapiens"]
+        examples=["Panthera leo", "Homo sapiens", "Quercus robur"]
     )
     limit: Optional[int] = Field(
         5, 
@@ -105,28 +105,28 @@ class CatalogueOfLifeAgent(IChatBioAgent):
         
         card = AgentCard(
             name="Catalogue of Life Agent",
-            description="Search for species and taxonomic information from the Catalogue of Life database",
+            description="Search for species and taxonomic information from the Catalogue of Life database using scientific names or taxon IDs. Common names (e.g., 'lion', 'tiger') are NOT supported for searches.",
             icon=None,
             url="http://localhost:9999",
             entrypoints=[
                 AgentEntrypoint(
                     id="search",
-                    description="Search for species or taxonomic information",
+                    description="Search for species using scientific names (common names not supported)",
                     parameters=SearchParameters
                 ),
                 AgentEntrypoint(
                     id="get_taxon_details",
-                    description="Retrieve complete taxonomic details for a specific taxon using its Catalogue of Life ID. Use this when user provides a taxon ID from search results.",
+                    description="Retrieve complete taxonomic details using taxon ID or scientific name",
                     parameters=TaxonDetailsParameters
                 ),
                 AgentEntrypoint(
                     id="get_synonyms",
-                    description="Get all synonyms (alternative scientific names) for a specific taxon using either its scientific name or taxon ID",
+                    description="Get all synonyms (alternative scientific names) using scientific name or taxon ID",
                     parameters=GetSynonymsParameters
                 ),
                 AgentEntrypoint(
                     id="get_vernacular_names",
-                    description="Get common names in various languages for a specific taxon using its Catalogue of Life ID",
+                    description="Get common names in various languages using taxon ID or scientific name",
                     parameters=GetVernacularNamesParameters
                 )
             ]
@@ -138,79 +138,71 @@ class CatalogueOfLifeAgent(IChatBioAgent):
         
         return card
 
+    async def _is_taxon_id(self, query: str) -> bool:
+        """Check if the query is likely a taxon ID"""
+        query = query.strip()
+        # Taxon IDs are typically short alphanumeric codes
+        return len(query) < 10 and " " not in query and not query[0].isupper()
+
+    async def _search_for_taxon_id(self, process: IChatBioAgentProcess, scientific_name: str) -> Optional[tuple[str, str]]:
+        """Search for a taxon ID using scientific name. Returns (taxon_id, found_scientific_name)"""
+        search_url = "https://api.checklistbank.org/dataset/3LR/nameusage/search"
+        search_params = {
+            "q": scientific_name,
+            "limit": 1,
+            "content": "SCIENTIFIC_NAME"
+        }
+        
+        try:
+            response = requests.get(search_url, params=search_params, timeout=10)
+            
+            if response.status_code != 200:
+                await process.log(f"Search failed: HTTP {response.status_code}")
+                return None
+            
+            data = response.json()
+            results = data.get("result", [])
+            
+            if len(results) == 0:
+                await process.log(f"No results found for '{scientific_name}'")
+                return None
+            
+            # Get the first result
+            first_result = results[0]
+            taxon_id = first_result.get("id")
+            usage = first_result.get("usage", {})
+            name_obj = usage.get("name", {})
+            found_name = name_obj.get("scientificName", "")
+            
+            await process.log(f"Found taxon: {found_name} (ID: {taxon_id})")
+            return (taxon_id, found_name)
+            
+        except Exception as e:
+            await process.log(f"Error searching for taxon: {str(e)}")
+            return None
+
     async def _handle_search(self, context: ResponseContext, request: str, params: SearchParameters):
         """Handle the search entrypoint"""
         async with context.begin_process(summary="Searching Catalogue of Life") as process:
             process: IChatBioAgentProcess
             
             try:
-                # ============================================================
-                # STEP 5: Have LLM generate parameters using response model
-                # ============================================================
-                print("DEBUG: Calling GPT to extract search parameters...")
+                # Direct use of search term without validation
+                search_term = params.query.strip()
                 
-                query_instructions = """
-                You are helping search the Catalogue of Life database, which uses scientific (Latin) names.
+                # Create validated parameters
+                query_params = CoLQueryParams(
+                    search_term=search_term,
+                    limit=5  # Keep original limit
+                )
                 
-                Your task: Convert the user's query into the BEST search term.
-                
-                CRITICAL RULES:
-                1. If the user gives a common name, YOU MUST convert it to the scientific name:
-                   - "lion" → "Panthera leo"
-                   - "tiger" → "Panthera tigris" 
-                   - "elephant" → "Loxodonta africana" OR "Elephas maximus"
-                   - "human" → "Homo sapiens"
-                   - "dog" → "Canis lupus familiaris"
-                   - "cat" → "Felis catus"
-                   - "polar bear" → "Ursus maritimus"
-                   - "bald eagle" → "Haliaeetus leucocephalus"
-                   
-                2. If the user already gives a scientific name, keep it as-is:
-                   - "Panthera leo" → "Panthera leo"
-                   - "Homo sapiens" → "Homo sapiens"
-                   
-                3. If the user gives a genus name, keep it:
-                   - "Panthera" → "Panthera"
-                   - "Homo" → "Homo"
-                   
-                4. If you don't know the scientific name for a common name, use the common name
-                
-                Return ONLY the search term, nothing else.
-                """
-                
-                try:
-                    query_params: CoLQueryParams = await self.instructor_client.chat.completions.create(
-                        model="gpt-4o-mini",
-                        messages=[
-                            {"role": "system", "content": query_instructions},
-                            {"role": "user", "content": f"Query: {request}\nParams: {params.query}"}
-                        ],
-                        response_model=CoLQueryParams,
-                        temperature=0,
-                        max_retries=2
-                    )
-                    
-                    print(f"DEBUG: GPT extracted - search_term: '{query_params.search_term}', limit: {query_params.limit}")
-                    
-                except Exception as gpt_error:
-                    print(f"DEBUG: GPT extraction failed: {gpt_error}")
-                    
-                    # Fallback: use the raw query with validation
-                    query_params = CoLQueryParams(
-                        search_term=params.query or request,
-                        limit=5
-                    )
-                    print(f"DEBUG: Using fallback search term: '{query_params.search_term}'")
+                print(f"DEBUG: Using search term: '{query_params.search_term}', limit: {query_params.limit}")
                 
                 # LOG 1: Search initiated
                 await process.log(f"Search initiated for: '{query_params.search_term}'")
                 print("DEBUG: Starting search process...")
                 
-                # ============================================================
-                # STEP 6: Transform parameters into API query URLs
-                # ============================================================
-                print("DEBUG: Building COL API URL...")
-                
+                # Build API URL
                 col_url = "https://api.checklistbank.org/dataset/3LR/nameusage/search"
                 api_params = {
                     "q": query_params.search_term,
@@ -235,9 +227,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                     }
                 )
                 
-                # ============================================================
-                # STEP 7: Run API query, collect response
-                # ============================================================
+                # Execute API request
                 print("DEBUG: Executing COL API request...")
                 
                 try:
@@ -270,9 +260,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                     await context.reply("Error: Could not connect to Catalogue of Life API")
                     return
                 
-                # ============================================================
-                # STEP 8: Extract/derive summary material from response
-                # ============================================================
+                # Extract results
                 results = data.get("result", [])
                 total = data.get("total", 0)
                 
@@ -283,10 +271,14 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                     no_results_msg = (
                         f"No species found for '{query_params.search_term}' in Catalogue of Life.\n\n"
                         f"**Suggestions:**\n"
-                        f"- Try using a scientific name (e.g., 'Panthera tigris' instead of 'tiger')\n"
-                        f"- Check spelling\n"
-                        f"- Use a broader search term (e.g., genus instead of species)\n"
-                        f"- Try common English names for well-known species"
+                        f"- Ensure you're using a scientific name (this agent does NOT support common names)\n"
+                        f"- Check spelling of the scientific name\n"
+                        f"- Try using just the genus name (e.g., 'Panthera' instead of 'Panthera leo')\n"
+                        f"- Try a broader taxonomic group (e.g., family or order name)\n\n"
+                        f"**Examples of valid searches:**\n"
+                        f"- Species: 'Homo sapiens', 'Panthera leo'\n"
+                        f"- Genus: 'Panthera', 'Quercus', 'Canis'\n"
+                        f"- Family: 'Felidae', 'Canidae'"
                     )
                     print(f"DEBUG: {no_results_msg}")
                     await context.reply(no_results_msg)
@@ -354,26 +346,14 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                     data={"results": top_results_summary}
                 )
                 
-                # ============================================================
-                # STEP 9: Generate response
-                # ============================================================
+                # Generate response
                 print("DEBUG: Generating response...")
                 
                 if len(formatted_results) == 1:
                     main_result = formatted_results[0]
                     result_scientific_name = main_result['scientificName']
                     reply_text = f"Found {result_scientific_name} ({main_result['rank']}, {main_result['status']}). "
-                    
-                    query_lower = query_params.search_term.lower()
-                    result_name_lower = result_scientific_name.lower()
-                    
-                    if (len(query_lower) > 3 and 
-                        query_lower not in result_name_lower and 
-                        result_name_lower.split()[0].lower() != query_lower):
-                        
-                        reply_text += f"\n\nNote: This result may not match your search for '{query_params.search_term}'. "
-                        reply_text += "The COL API searches broadly (including author names and references). "
-                        reply_text += "For better results, try using the scientific name (e.g., 'Panthera leo' for lion). "
+                    reply_text += f"Taxon ID: {main_result['id']}. "
                     
                 elif len(formatted_results) > 1:
                     reply_text = f"Found {total} matches for '{query_params.search_term}'. "
@@ -434,7 +414,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                     f"Sorry, an error occurred while searching Catalogue of Life.\n\n"
                     f"**Error:** {str(e)}\n\n"
                     f"**Suggestions:**\n"
-                    f"- Try rephrasing your search query\n"
+                    f"- Ensure you're using a scientific name\n"
                     f"- Check your internet connection\n"
                     f"- Try again in a few moments"
                 )
@@ -445,10 +425,29 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             process: IChatBioAgentProcess
             
             try:
-                taxon_id = params.taxon_id.strip()
+                query = params.taxon_id.strip()
+                taxon_id = None
+                scientific_name = None
                 
-                # LOG 1: Request initiated
-                await process.log(f"Fetching details for taxon ID: '{taxon_id}'")
+                # Check if it's a taxon ID or scientific name
+                if await self._is_taxon_id(query):
+                    # It's already a taxon ID
+                    taxon_id = query
+                    await process.log(f"Using taxon ID: '{taxon_id}'")
+                else:
+                    # It's a scientific name - search for the taxon ID
+                    await process.log(f"Scientific name provided: '{query}', searching for taxon ID")
+                    
+                    result = await self._search_for_taxon_id(process, query)
+                    if not result:
+                        await context.reply(
+                            f"No exact match found for '{query}' in Catalogue of Life.\n\n"
+                            f"Please check the spelling and try again."
+                        )
+                        return
+                    
+                    taxon_id, scientific_name = result
+                
                 print(f"DEBUG: Fetching taxon details for ID: {taxon_id}")
                 
                 # Build API URL
@@ -456,7 +455,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 
                 print(f"DEBUG: API URL: {col_url}")
                 
-                # LOG 2: API Query
+                # LOG: API Query
                 await process.log(
                     "API Query",
                     data={"endpoint": col_url}
@@ -521,7 +520,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 environments = data.get("environments", [])
                 link = data.get("link", "")
                 
-                # LOG 3: Details retrieved
+                # LOG: Details retrieved
                 await process.log(
                     f"Retrieved details for: {scientific_name}",
                     data={
@@ -535,11 +534,12 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 # Build reply
                 full_name = f"{scientific_name} {authorship}".strip()
                 reply_text = f"**{full_name}**\n\n"
+                reply_text += f"**Taxon ID:** {taxon_id}\n"
                 reply_text += f"**Rank:** {rank}\n"
                 reply_text += f"**Status:** {status}\n"
                 
                 if extinct:
-                    reply_text += f"**Extinct:** Yes ☠️\n"
+                    reply_text += f"**Extinct:** Yes\n"
                 
                 if environments:
                     reply_text += f"**Environments:** {', '.join(environments)}\n"
@@ -610,7 +610,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 await context.reply(
                     f"Sorry, an error occurred while fetching taxon details.\n\n"
                     f"**Error:** {str(e)}\n\n"
-                    f"Please check the taxon ID and try again."
+                    f"Please check the taxon ID or scientific name and try again."
                 )
 
     async def _handle_get_synonyms(self, context: ResponseContext, request: str, params: GetSynonymsParameters):
@@ -623,10 +623,8 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 taxon_id = None
                 scientific_name = None
                 
-                # Determine if input is a taxon ID (short alphanumeric) or scientific name (has spaces/longer)
-                is_likely_id = len(query) < 10 and " " not in query and not query[0].isupper()
-                
-                if is_likely_id:
+                # Determine if input is a taxon ID or scientific name
+                if await self._is_taxon_id(query):
                     # Treat as taxon ID
                     taxon_id = query
                     await process.log(f"Using taxon ID: '{taxon_id}'")
@@ -636,49 +634,16 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                     await process.log(f"Searching for scientific name: '{query}'")
                     print(f"DEBUG: Input identified as scientific name: {query}")
                     
-                    # Search for the species to get its taxon ID
-                    search_url = "https://api.checklistbank.org/dataset/3LR/nameusage/search"
-                    search_params = {
-                        "q": query,
-                        "limit": 1,
-                        "content": "SCIENTIFIC_NAME"
-                    }
+                    result = await self._search_for_taxon_id(process, query)
+                    if not result:
+                        await context.reply(
+                            f"No species found for '{query}' in Catalogue of Life.\n\n"
+                            f"Please check the spelling or use a valid taxon ID."
+                        )
+                        return
                     
-                    try:
-                        search_response = requests.get(search_url, params=search_params, timeout=10)
-                        
-                        if search_response.status_code != 200:
-                            await process.log(f"Search failed: HTTP {search_response.status_code}")
-                            await context.reply(f"Could not search for '{query}'. Please check the name and try again.")
-                            return
-                        
-                        search_data = search_response.json()
-                        results = search_data.get("result", [])
-                        
-                        if len(results) == 0:
-                            await process.log("No matching species found")
-                            await context.reply(f"No species found for '{query}'. Please check the spelling or try the scientific name.")
-                            return
-                        
-                        # Get the first result (most relevant)
-                        first_result = results[0]
-                        taxon_id = first_result.get("id")
-                        usage = first_result.get("usage", {})
-                        name_obj = usage.get("name", {})
-                        scientific_name = name_obj.get("scientificName", query)
-                        
-                        await process.log(f"Found taxon: {scientific_name} (ID: {taxon_id})")
-                        print(f"DEBUG: Found taxon ID: {taxon_id} for name: {scientific_name}")
-                        
-                    except requests.RequestException as search_error:
-                        print(f"DEBUG: Search error: {search_error}")
-                        await process.log(f"Search error: {str(search_error)}")
-                        await context.reply("Error: Could not search for species")
-                        return
-                    except json.JSONDecodeError:
-                        await process.log("Failed to parse search response")
-                        await context.reply("Error: Invalid search response")
-                        return
+                    taxon_id, scientific_name = result
+                    print(f"DEBUG: Found taxon ID: {taxon_id} for name: {scientific_name}")
                 
                 if not taxon_id:
                     await context.reply("Could not determine taxon ID. Please try again.")
@@ -846,10 +811,29 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             process: IChatBioAgentProcess
             
             try:
-                taxon_id = params.taxon_id.strip()
+                query = params.query.strip()
+                taxon_id = None
+                scientific_name = None
                 
-                # LOG 1: Request initiated
-                await process.log(f"Fetching vernacular names for taxon ID: '{taxon_id}'")
+                # Check if it's a taxon ID or scientific name
+                if await self._is_taxon_id(query):
+                    # It's already a taxon ID
+                    taxon_id = query
+                    await process.log(f"Using taxon ID: '{taxon_id}'")
+                else:
+                    # It's a scientific name - search for the taxon ID
+                    await process.log(f"Scientific name provided: '{query}', searching for taxon ID")
+                    
+                    result = await self._search_for_taxon_id(process, query)
+                    if not result:
+                        await context.reply(
+                            f"No exact match found for '{query}' in Catalogue of Life.\n\n"
+                            f"Please check the spelling and try again."
+                        )
+                        return
+                    
+                    taxon_id, scientific_name = result
+                
                 print(f"DEBUG: Fetching vernacular names for ID: {taxon_id}")
                 
                 # Build API URL
@@ -857,7 +841,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 
                 print(f"DEBUG: API URL: {col_url}")
                 
-                # LOG 2: API Query
+                # LOG: API Query
                 await process.log(
                     "API Query",
                     data={"endpoint": col_url}
@@ -900,7 +884,8 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 # Check if there are any vernacular names
                 if not data or len(data) == 0:
                     await process.log("No vernacular names found")
-                    await context.reply(f"No common names found for taxon ID '{taxon_id}'. This species may not have vernacular names in the database.")
+                    display_name = scientific_name if scientific_name else f"taxon ID '{taxon_id}'"
+                    await context.reply(f"No common names found for {display_name}. This species may not have vernacular names in the database.")
                     return
                 
                 # Extract vernacular names
@@ -925,14 +910,15 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                         print(f"DEBUG: Error processing vernacular name: {item_error}")
                         continue
                 
-                # LOG 3: Names retrieved
+                # LOG: Names retrieved
                 await process.log(
                     f"Found {total_names} vernacular names in {len(names_by_language)} languages",
                     data={"languages": list(names_by_language.keys())}
                 )
                 
                 # Build reply
-                reply_text = f"**Common names found for taxon ID {taxon_id}:**\n\n"
+                display_name = scientific_name if scientific_name else f"taxon ID {taxon_id}"
+                reply_text = f"**Common names found for {display_name}:**\n\n"
                 
                 # Sort languages alphabetically
                 for language in sorted(names_by_language.keys()):
@@ -949,7 +935,9 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 print("DEBUG: Creating artifact...")
                 
                 artifact_data = {
+                    "query": query,
                     "taxon_id": taxon_id,
+                    "scientific_name": scientific_name or "Not provided",
                     "total_names": total_names,
                     "language_count": len(names_by_language),
                     "names_by_language": names_by_language,
@@ -959,12 +947,13 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 try:
                     await process.create_artifact(
                         mimetype="application/json",
-                        description=f"Vernacular names for taxon {taxon_id} - {total_names} names in {len(names_by_language)} languages",
+                        description=f"Vernacular names for {scientific_name or taxon_id} - {total_names} names in {len(names_by_language)} languages",
                         content=json.dumps(artifact_data, indent=2).encode('utf-8'),
                         uris=[col_url],
                         metadata={
                             "data_source": "Catalogue of Life",
                             "taxon_id": taxon_id,
+                            "scientific_name": scientific_name or "Unknown",
                             "total_names": total_names,
                             "language_count": len(names_by_language)
                         }
@@ -990,7 +979,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 await context.reply(
                     f"Sorry, an error occurred while fetching vernacular names.\n\n"
                     f"**Error:** {str(e)}\n\n"
-                    f"Please check the taxon ID and try again."
+                    f"Please check the taxon ID or scientific name and try again."
                 )
 
     @override
