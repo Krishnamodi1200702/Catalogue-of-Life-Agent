@@ -1,0 +1,644 @@
+{
+  "summary": {
+    "total_tests": 46,
+    "passed": 42,
+    "failed": 4,
+    "pass_rate": 91.30434782608695
+  },
+  "category_stats": {
+    "bacteria": {
+      "passed": 4,
+      "failed": 0,
+      "total": 4
+    },
+    "fungi": {
+      "passed": 4,
+      "failed": 0,
+      "total": 4
+    },
+    "protist": {
+      "passed": 1,
+      "failed": 0,
+      "total": 1
+    },
+    "algae": {
+      "passed": 2,
+      "failed": 0,
+      "total": 2
+    },
+    "invertebrate": {
+      "passed": 4,
+      "failed": 0,
+      "total": 4
+    },
+    "plant": {
+      "passed": 4,
+      "failed": 0,
+      "total": 4
+    },
+    "extinct": {
+      "passed": 3,
+      "failed": 0,
+      "total": 3
+    },
+    "subspecies": {
+      "passed": 2,
+      "failed": 0,
+      "total": 2
+    },
+    "variety": {
+      "passed": 1,
+      "failed": 0,
+      "total": 1
+    },
+    "special_chars": {
+      "passed": 2,
+      "failed": 0,
+      "total": 2
+    },
+    "partial": {
+      "passed": 3,
+      "failed": 0,
+      "total": 3
+    },
+    "invalid": {
+      "passed": 2,
+      "failed": 3,
+      "total": 5
+    },
+    "taxon_details": {
+      "passed": 2,
+      "failed": 1,
+      "total": 3
+    },
+    "synonyms": {
+      "passed": 3,
+      "failed": 0,
+      "total": 3
+    },
+    "vernacular": {
+      "passed": 3,
+      "failed": 0,
+      "total": 3
+    },
+    "high_volume": {
+      "passed": 2,
+      "failed": 0,
+      "total": 2
+    }
+  },
+  "tests": [
+    {
+      "name": "1.1 Common Bacteria",
+      "category": "bacteria",
+      "query": "Search for Escherichia coli in Catalogue of Life",
+      "expected": "Should find the bacteria species, not millions of unrelated results",
+      "passed": true,
+      "response": "Based on the search, you can find *Escherichia coli* in the Catalogue of Life by visiting their [website](https://www.catalogueoflife.org) and using their search function. Simply enter \"Escherichia coli\" in the search bar to locate its entry.",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 17.949573040008545
+    },
+    {
+      "name": "1.2 Pathogenic Bacteria",
+      "category": "bacteria",
+      "query": "Search for Mycobacterium tuberculosis in Catalogue of Life",
+      "expected": "Should find TB bacteria specifically",
+      "passed": true,
+      "response": "The search indicates that *Mycobacterium tuberculosis* is a well-known pathogen classified within the genus *Mycobacterium*. While a direct, specific record for it in the Catalogue of Life was not explicitly found through the search, it is recognized as a species within the taxonomic hierarchy of bacteria. If you need detailed taxonomic information or specific records from the Catalogue of Life, I can help further with that. Would you like me to assist with that?",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 22.609479904174805
+    },
+    {
+      "name": "1.3 Gut Bacteria",
+      "category": "bacteria",
+      "query": "Search for Lactobacillus acidophilus in Catalogue of Life",
+      "expected": "Should find probiotic bacteria",
+      "passed": true,
+      "response": "I found information indicating that Lactobacillus acidophilus is listed in the Catalogue of Life, specifically referenced in the 2009 catalog. It is classified within the Lactobacillaceae family and is known as a probiotic bacterium found in humans and certain foods. Would you like more detailed taxonomic information or specific data from the Catalogue of Life?",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 12.635618925094604
+    },
+    {
+      "name": "1.4 Soil Bacteria",
+      "category": "bacteria",
+      "query": "Search for Streptomyces coelicolor in Catalogue of Life",
+      "expected": "Should find antibiotic-producing bacteria",
+      "passed": true,
+      "response": "Based on the search results, *Streptomyces coelicolor* is considered a synonym of *Streptomyces albidoflavus*. In major taxonomic databases, the accepted name is *Streptomyces albidoflavus*, and the name *Streptomyces coelicolor* is listed as a synonym. If you search in the Catalogue of Life, you are likely to find *Streptomyces coelicolor* under *Streptomyces albidoflavus*.",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 18.474035024642944
+    },
+    {
+      "name": "2.1 Common Yeast",
+      "category": "fungi",
+      "query": "Search for Saccharomyces cerevisiae in Catalogue of Life",
+      "expected": "Should find baker's yeast",
+      "passed": true,
+      "response": "I found information about *Saccharomyces cerevisiae*. It is listed under the kingdom Fungi, phylum Ascomycota, class Saccharomycetes, order Saccharomycetales, and family Saccharomycetaceae. It is commonly known as Baker's yeast or brewer's yeast. If you want, I can provide a direct link to the detailed entry or further details.",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 8.131093978881836
+    },
+    {
+      "name": "2.2 Pathogenic Fungus",
+      "category": "fungi",
+      "query": "Search for Candida albicans in Catalogue of Life",
+      "expected": "Should find pathogenic yeast",
+      "passed": true,
+      "response": "I found some general information and classification details about *Candida albicans*, but I didn't retrieve a specific entry from the Catalogue of Life. If you'd like, I can try to access the Catalogue of Life database directly for a detailed record. Would you like me to proceed with that?",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 9.971354007720947
+    },
+    {
+      "name": "2.3 Edible Mushroom",
+      "category": "fungi",
+      "query": "Search for Agaricus bisporus in Catalogue of Life",
+      "expected": "Should find common button mushroom",
+      "passed": true,
+      "response": "It appears that I couldn't find a direct search result from the Catalogue of Life. I will now attempt to retrieve information specifically from their database to ensure accuracy. Let me do that next.",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 32.12792110443115
+    },
+    {
+      "name": "2.4 Mold",
+      "category": "fungi",
+      "query": "Search for Aspergillus niger in Catalogue of Life",
+      "expected": "Should find black mold fungus",
+      "passed": true,
+      "response": "*Aspergillus niger* is listed in the Catalogue of Life. It belongs to the kingdom Fungi and the family Aspergillaceae. You can find more details about its classification and synonyms in the [Catalogue of Life](https://www.gbif.org/es/species/144094364). Would you like more specific information about this species?",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 16.01944899559021
+    },
+    {
+      "name": "3.1 Malaria Parasite",
+      "category": "protist",
+      "query": "Search for Plasmodium falciparum in Catalogue of Life",
+      "expected": "Should find malaria-causing protist",
+      "passed": true,
+      "response": "The search results indicate detailed taxonomic and biological information about *Plasmodium falciparum*, but do not specify whether it is present in the Catalogue of Life. Would you like me to attempt a direct database query or guide you on how to access the Catalogue of Life for this species?",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 20.051568031311035
+    },
+    {
+      "name": "3.2 Common Algae",
+      "category": "algae",
+      "query": "Search for Chlamydomonas reinhardtii in Catalogue of Life",
+      "expected": "Should find model green algae",
+      "passed": true,
+      "response": "The search did not directly retrieve a specific entry for *Chlamydomonas reinhardtii* in the Catalogue of Life, but I can provide you with its taxonomic classification based on other sources: it belongs to the Kingdom Plantae, Division Chlorophyta, Class Chlorophyceae, Order Chlamydomonadales, Family Chlamydomonadaceae, Genus *Chlamydomonas*, and Species *Chlamydomonas reinhardtii*. Would you like more detailed information or assistance with something else?",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 24.2772958278656
+    },
+    {
+      "name": "3.3 Giant Kelp",
+      "category": "algae",
+      "query": "Search for Macrocystis pyrifera in Catalogue of Life",
+      "expected": "Should find giant kelp species",
+      "passed": true,
+      "response": "It appears that I was unable to find a direct entry for *Macrocystis pyrifera* in the Catalogue of Life through the available search tools. If you need specific taxonomic information, I can try alternative approaches or sources.",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 17.41117000579834
+    },
+    {
+      "name": "4.1 Model Organism Nematode",
+      "category": "invertebrate",
+      "query": "Search for Caenorhabditis elegans in Catalogue of Life",
+      "expected": "Should find roundworm model organism",
+      "passed": true,
+      "response": "I was unable to find a direct entry for *Caenorhabditis elegans* in the Catalogue of Life through the web search. If you need detailed taxonomic information, I can assist you with other sources or specific data.",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 9.587212085723877
+    },
+    {
+      "name": "4.2 Fruit Fly",
+      "category": "invertebrate",
+      "query": "Search for Drosophila melanogaster in Catalogue of Life",
+      "expected": "Should find common fruit fly",
+      "passed": true,
+      "response": "I found information about Drosophila melanogaster in the Catalogue of Life. It is classified within the family Drosophilidae, and is a well-known species around the world, often referred to as the fruit fly or vinegar fly. If you'd like, I can provide more detailed taxonomy or other specific information.",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 8.453202247619629
+    },
+    {
+      "name": "4.3 Tardigrade",
+      "category": "invertebrate",
+      "query": "Search for Hypsibius dujardini in Catalogue of Life",
+      "expected": "Should find water bear species",
+      "passed": true,
+      "response": "I could not find a direct entry for *Hypsibius dujardini* in the Catalogue of Life based on my search. However, there is extensive information about this species available on other platforms such as Animal Diversity Web, GBIF, Wikipedia, and ResearchGate. Would you like information from any of these sources?",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 17.660866022109985
+    },
+    {
+      "name": "4.4 Jellyfish",
+      "category": "invertebrate",
+      "query": "Search for Aurelia aurita in Catalogue of Life",
+      "expected": "Should find moon jellyfish",
+      "passed": true,
+      "response": "According to the Catalogue of Life and additional sources, *Aurelia aurita* is recognized as a species within the genus *Aurelia* and is considered semi-cosmopolitan, found in coastal waters of the North Atlantic, Pacific, and Indian Oceans (source: [Animal Diversity Web](https://animaldiversity.org/accounts/Aurelia/)).",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 7.2355029582977295
+    },
+    {
+      "name": "5.1 Model Plant",
+      "category": "plant",
+      "query": "Search for Arabidopsis thaliana in Catalogue of Life",
+      "expected": "Should find thale cress",
+      "passed": true,
+      "response": "The search confirmed that *Arabidopsis thaliana* is listed in the Catalogue of Life. It is a small flowering plant in the Brassicaceae family, widely studied as a model organism in plant biology. If you need detailed taxonomic information or links to specific records, please let me know!",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 12.880560159683228
+    },
+    {
+      "name": "5.2 Carnivorous Plant",
+      "category": "plant",
+      "query": "Search for Dionaea muscipula in Catalogue of Life",
+      "expected": "Should find Venus flytrap",
+      "passed": true,
+      "response": "I was unable to find the direct record of *Dionaea muscipula* in the Catalogue of Life through a web search. \n\nWould you like me to try accessing the Catalogue of Life database directly to find this species, or do you want guidance on how to search for it on their website?",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 15.996798992156982
+    },
+    {
+      "name": "5.3 Crop Plant",
+      "category": "plant",
+      "query": "Search for Oryza sativa in Catalogue of Life",
+      "expected": "Should find rice plant",
+      "passed": true,
+      "response": "According to GBIF and Plants of the World Online, *Oryza sativa* L. was first published in Species Plantarum (1753) and is accepted as a cultivated rice species from China. The Catalogue of Life lists 562,104 occurrences of *Oryza sativa*, with 4,675 occurrences including images.",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 9.429068088531494
+    },
+    {
+      "name": "5.4 Cactus",
+      "category": "plant",
+      "query": "Search for Opuntia ficus-indica in Catalogue of Life",
+      "expected": "Should find prickly pear cactus",
+      "passed": true,
+      "response": "The search indicates that *Opuntia ficus-indica* is recognized as a widely cultivated cactus species, but it does not provide a direct link or specific entry from the Catalogue of Life. If you need detailed taxonomic information or a direct link to its record in the Catalogue of Life, I can try to access the database directly. Would you like me to proceed with a more targeted search or attempt to retrieve the official record?",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 21.43258810043335
+    },
+    {
+      "name": "6.1 Dinosaur",
+      "category": "extinct",
+      "query": "Search for Velociraptor mongoliensis in Catalogue of Life",
+      "expected": "Should find extinct dinosaur and mark as extinct",
+      "passed": true,
+      "response": "I was unable to find a direct entry for *Velociraptor mongoliensis* specifically within the Catalogue of Life based on the internet search. However, information about this species is available in other sources, and it is recognized in databases like GBIF. Would you like me to assist you in exploring related resources or specific information about *Velociraptor mongoliensis*?",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 14.982028007507324
+    },
+    {
+      "name": "6.2 Mammoth",
+      "category": "extinct",
+      "query": "Search for Mammuthus primigenius in Catalogue of Life",
+      "expected": "Should find woolly mammoth",
+      "passed": true,
+      "response": "The search did not return specific results from the Catalogue of Life regarding *Mammuthus primigenius*. However, I can provide general information about this species based on my training data \u2014 it is an extinct woolly mammoth species that lived during the Pleistocene epoch and is well known from paleontological findings. If you want detailed taxonomic information or records, I can try to access specific biodiversity databases or resources for that.",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 31.932385206222534
+    },
+    {
+      "name": "6.3 Dodo",
+      "category": "extinct",
+      "query": "Search for Raphus cucullatus in Catalogue of Life",
+      "expected": "Should find extinct dodo bird",
+      "passed": true,
+      "response": "I couldn't find a direct search result from the Catalogue of Life for *Raphus cucullatus*. However, I can provide some key details about this species based on other sources: it is the extinct Dodo, a flightless bird that was endemic to Mauritius. Would you like me to help you access more specific data from other biodiversity databases or clarify anything else about this species?",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 18.823245763778687
+    },
+    {
+      "name": "7.1 Dog Subspecies",
+      "category": "subspecies",
+      "query": "Search for Canis lupus familiaris in Catalogue of Life",
+      "expected": "Should find domestic dog as subspecies",
+      "passed": true,
+      "response": "The search indicates that *Canis lupus familiaris* is recognized as a subspecies of the wolf (*Canis lupus*) within the Catalogue of Life, with a classification emphasizing its domestication and diverse breeds. If you need more specific details or a direct link to the record, please let me know!",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 9.274318218231201
+    },
+    {
+      "name": "7.2 Tiger Subspecies",
+      "category": "subspecies",
+      "query": "Search for Panthera tigris altaica in Catalogue of Life",
+      "expected": "Should find Siberian tiger subspecies",
+      "passed": true,
+      "response": "I found 568 observation records of Panthera tigris altaica (Siberian tiger) in iNaturalist. The records include images and location data, which can be accessed via the provided link. If you'd like, I can help you explore specific observations or details from these records.",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 17.552001953125
+    },
+    {
+      "name": "7.3 Plant Variety",
+      "category": "variety",
+      "query": "Search for Solanum lycopersicum var. cerasiforme in Catalogue of Life",
+      "expected": "Should handle variety notation",
+      "passed": true,
+      "response": "The search results indicate that *Solanum lycopersicum var. cerasiforme* (cherry tomato) is recognized within the taxonomic frameworks integrated into the Catalogue of Life, with references in related databases such as ITIS and GBIF. However, there is no direct, specific page link for this variety in the Catalogue of Life from the search results. Would you like me to try to retrieve more detailed taxonomic data or a direct link if available?",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 21.22230076789856
+    },
+    {
+      "name": "8.1 Hyphenated Name",
+      "category": "special_chars",
+      "query": "Search for Bufo bufo in Catalogue of Life",
+      "expected": "Should handle simple binomial",
+      "passed": true,
+      "response": "The search results confirm that *Bufo bufo* is listed in the Catalogue of Life as an accepted species name. The species is also referenced in other biodiversity databases like GBIF and EUNIS, with its taxonomic classification belonging to the family Bufonidae. If you'd like more detailed taxonomic information or specific records, please let me know!",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 22.909167766571045
+    },
+    {
+      "name": "8.2 Name with Parentheses",
+      "category": "special_chars",
+      "query": "Get taxon details for species described as (Linnaeus, 1758) from Catalogue of Life",
+      "expected": "Should handle authorship in parentheses",
+      "passed": true,
+      "response": "The search results indicate that species described by Linnaeus in 1758 are included in the Catalogue of Life, but a comprehensive list of all such species is complex to retrieve directly through a general web search. To get detailed taxon information, I would typically need to access a specific database query, which may involve more detailed filtering or searching within their platform. \n\nWould you like to specify a particular species you're interested in, or would you like me to try retrieving details for a known species described by Linnaeus in that year?",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 17.117253065109253
+    },
+    {
+      "name": "9.1 Genus Only - Common",
+      "category": "partial",
+      "query": "Search for Quercus in Catalogue of Life",
+      "expected": "Should return multiple oak species, not millions of unrelated results",
+      "passed": true,
+      "response": "The search results indicate that *Quercus*, commonly known as oak, is well documented in the Catalogue of Life. It includes around 500 species and 180 hybrids, distributed across North America, Europe, Asia, and North Africa. Oaks are characterized by lobed leaves and acorns, and play an important ecological role. If you need more detailed or specific data from the Catalogue of Life, please let me know!",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 14.420350074768066
+    },
+    {
+      "name": "9.2 Genus Only - Bacteria",
+      "category": "partial",
+      "query": "Search for Bacillus in Catalogue of Life",
+      "expected": "Should return bacterial genus, manageable number of results",
+      "passed": true,
+      "response": "The search results indicate that Bacillus is a genus of rod-shaped, Gram-positive bacteria classified within the Bacilli. It includes notable species such as Bacillus cereus, Bacillus thuringiensis, Bacillus subtilis, and Bacillus anthracis, among others. These bacteria are known for producing spores and have diverse ecological roles, including soil dwelling and associations with various environments. For more detailed taxonomic information, you can explore the Catalogue of Life directly.",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 10.791162967681885
+    },
+    {
+      "name": "9.3 Single Word",
+      "category": "partial",
+      "query": "Search for Drosophila in Catalogue of Life",
+      "expected": "Should return genus with multiple species",
+      "passed": true,
+      "response": "The search indicates that *Drosophila* is indeed included in the Catalogue of Life, with multiple species listed under this genus, such as *Drosophila melanogaster*. If you need more specific information or a direct link to the genus page, please let me know!",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 13.482062101364136
+    },
+    {
+      "name": "10.1 Completely Fake",
+      "category": "invalid",
+      "query": "Search for Dragonus maximus in Catalogue of Life",
+      "expected": "Should fail gracefully with no results",
+      "passed": false,
+      "response": "\"Dragonus maximus\" is not listed in the Catalogue of Life. It appears that this name is associated with fictional dragons from the \"How to Train Your Dragon\" series rather than a real species.",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 15.531780242919922
+    },
+    {
+      "name": "10.2 Misspelled Common",
+      "category": "invalid",
+      "query": "Search for Homo sapienz in Catalogue of Life",
+      "expected": "Should fail gracefully or suggest correction",
+      "passed": false,
+      "response": "The search results indicate that _Homo sapiens_ is classified within the Catalogue of Life under the taxonomic hierarchy: Kingdom Animalia, Phylum Chordata, Class Mammalia, Order Primates, Family Hominidae, Genus _Homo_, and Species _Homo sapiens_. It was first named by Linnaeus in 1758. Would you like a direct link to the detailed record?",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 24.836003065109253
+    },
+    {
+      "name": "10.3 Common Name",
+      "category": "invalid",
+      "query": "Search for elephant in Catalogue of Life",
+      "expected": "Should fail gracefully - agent doesn't support common names",
+      "passed": false,
+      "response": "Based on the search, elephants are included in the Catalogue of Life. They belong to the family Elephantidae, with species such as the African bush elephant (*Loxodonta africana*), African forest elephant (*Loxodonta cyclotis*), and Asian elephant (*Elephas maximus*).",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 11.78210186958313
+    },
+    {
+      "name": "10.4 Mixed Case Weird",
+      "category": "invalid",
+      "query": "Search for pAnThErA LeO in Catalogue of Life",
+      "expected": "Should handle case insensitivity",
+      "passed": true,
+      "response": "I was unable to locate a direct entry for *Panthera leo* in the Catalogue of Life through the web search. However, *Panthera leo* (the lion) is a well-known species that is typically included in major biodiversity databases like GBIF. If you need detailed taxonomic information or other data, I can help with those sources.",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 20.851336002349854
+    },
+    {
+      "name": "10.5 Extra Spaces",
+      "category": "invalid",
+      "query": "Search for Felis  catus in Catalogue of Life",
+      "expected": "Should handle multiple spaces",
+      "passed": true,
+      "response": "I found that Felis catus is listed in the Catalogue of Life with its taxonomic hierarchy from Kingdom Animalia down to the species level. The entry also includes synonyms such as \"Felis catus Linnaeus p. 40\" and \"Felis catus Johnson et al. p. 74.\" If you want a direct link to the specific entry or more detailed information, please let me know!",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 8.522082090377808
+    },
+    {
+      "name": "11.1 Fake Taxon ID",
+      "category": "taxon_details",
+      "query": "Get taxon details for ZZZZZ from Catalogue of Life",
+      "expected": "Should fail gracefully for invalid ID",
+      "passed": false,
+      "response": "It appears that \"ZZZZZ\" is not a recognized taxon name in the Catalogue of Life, so there are no specific details available for it. If you have a different or more accurate taxon name, I can try searching again.",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 7.807003736495972
+    },
+    {
+      "name": "11.2 Very Short ID",
+      "category": "taxon_details",
+      "query": "Get taxon details for A1 from Catalogue of Life",
+      "expected": "Should handle or reject short IDs",
+      "passed": true,
+      "response": "The search for specific taxon details for \"A1\" from the Catalogue of Life did not return a direct result. It appears that \"A1\" may be a code or abbreviation that needs clarification, or it might not be a directly recognized taxon identifier in the Catalogue of Life. \n\nCould you please clarify or provide additional details about \"A1\"? For example, is it a species name, a higher taxon, or a specific identifier?",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 10.407244682312012
+    },
+    {
+      "name": "11.3 Numeric-only ID",
+      "category": "taxon_details",
+      "query": "Get taxon details for 12345 from Catalogue of Life",
+      "expected": "Should handle numeric IDs appropriately",
+      "passed": true,
+      "response": "It appears that I need more specific information, such as the dataset ID in the Catalogue of Life, to accurately retrieve the taxon details for ID 12345. Without the dataset ID, I cannot locate the record. Would you be able to provide the dataset ID, or would you like me to help you find more details about this taxon through another method?",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 15.66314697265625
+    },
+    {
+      "name": "12.1 Species with Many Synonyms",
+      "category": "synonyms",
+      "query": "Get synonyms for Bos taurus from Catalogue of Life",
+      "expected": "Should find cattle synonyms if any",
+      "passed": true,
+      "response": "According to information associated with the Catalogue of Life, synonyms for *Bos taurus* include *Bos domestic* and domestic cattle.",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 6.604163885116577
+    },
+    {
+      "name": "12.2 Recently Split Species",
+      "category": "synonyms",
+      "query": "Get synonyms for Giraffa camelopardalis from Catalogue of Life",
+      "expected": "Should show if species has been reclassified",
+      "passed": true,
+      "response": "According to various taxonomic sources, synonyms for *Giraffa camelopardalis* include *Camelopardalis capensis* and *Cervus camelopardalis*. The species' taxonomy has been revised over time, especially with genetic studies suggesting that what was once considered a single species might actually comprise four distinct species.",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 11.716182947158813
+    },
+    {
+      "name": "12.3 Bacteria Synonyms",
+      "category": "synonyms",
+      "query": "Get synonyms for Bacillus subtilis from Catalogue of Life",
+      "expected": "Should find bacterial synonyms",
+      "passed": true,
+      "response": "It appears that I was unable to retrieve direct synonyms for *Bacillus subtilis* from the Catalogue of Life, possibly due to system maintenance. However, other sources list several synonyms, such as *Vibrio subtilis*, *Bacillus globigii*, and *hay bacillus*. Would you like me to provide a more detailed list from these sources?",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 13.192291021347046
+    },
+    {
+      "name": "13.1 Common Bacteria",
+      "category": "vernacular",
+      "query": "Get vernacular names for Escherichia coli from Catalogue of Life",
+      "expected": "Bacteria may not have common names - should handle gracefully",
+      "passed": true,
+      "response": "Based on available information, the common vernacular name for *Escherichia coli* is \"E. coli.\" Other historical or synonymous names include \"Bacterium coli commune,\" \"Bacillus coli,\" \"Bacterium coli,\" and \"Enterococcus coli.\"",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 31.255469799041748
+    },
+    {
+      "name": "13.2 Model Organism",
+      "category": "vernacular",
+      "query": "Get vernacular names for Drosophila melanogaster from Catalogue of Life",
+      "expected": "Should find 'fruit fly' in various languages",
+      "passed": true,
+      "response": "According to the search results, common vernacular names for *Drosophila melanogaster* include **fruit fly**, **lesser fruit fly**, and **vinegar fly**. These names are used in various sources such as Wikipedia and PubChem.",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 8.885458946228027
+    },
+    {
+      "name": "13.3 Obscure Species",
+      "category": "vernacular",
+      "query": "Get vernacular names for Hypsibius dujardini from Catalogue of Life",
+      "expected": "May have no common names - should handle gracefully",
+      "passed": true,
+      "response": "The common vernacular names associated with *Hypsibius dujardini* are \"Water bear\" and \"moss piglets,\" which are generally used for tardigrades as a group.",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 7.977876901626587
+    },
+    {
+      "name": "14.1 Beetle Genus",
+      "category": "high_volume",
+      "query": "Search for Agrilus in Catalogue of Life",
+      "expected": "Large genus - should return reasonable number not millions",
+      "passed": true,
+      "response": "According to the internet search, Agrilus is a large genus of beetles within the family Buprestidae, with around 3,000 species distributed worldwide. It includes notable pest species such as the emerald ash borer (Agrilus planipennis).",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 10.283071994781494
+    },
+    {
+      "name": "14.2 Wasp Genus",
+      "category": "high_volume",
+      "query": "Search for Ichneumon in Catalogue of Life",
+      "expected": "Should handle large insect genus",
+      "passed": true,
+      "response": "The search indicates that in the Catalogue of Life, \"Ichneumon\" refers both to a widespread family of parasitic wasps, Ichneumonidae, and a specific genus within that family. The family Ichneumonidae is highly diverse, with around 25,000 species described, and they play important roles as parasitoids in ecosystems. The genus *Ichneumon* was established by Linnaeus in 1758 and is part of this diverse family. If you'd like more detailed taxonomic information or specific species data, please let me know!",
+      "total_results": null,
+      "warnings": [],
+      "error": null,
+      "execution_time": 17.96200203895569
+    }
+  ]
+}

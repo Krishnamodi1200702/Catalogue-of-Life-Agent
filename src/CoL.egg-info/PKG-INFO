@@ -1,0 +1,62 @@
+Metadata-Version: 2.4
+Name: CoL
+Version: 0.1.0
+Summary: description
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: ichatbio-sdk~=0.2.1
+Requires-Dist: a2a-sdk[sqlite]
+Requires-Dist: python-dotenv<2.0.0,>=0.9.9
+Requires-Dist: openai~=1.79.0
+Requires-Dist: instructor~=1.8.2
+Requires-Dist: pydantic~=2.11.4
+Requires-Dist: requests
+Requires-Dist: sqlalchemy
+Requires-Dist: aiosqlite
+
+# Catalogue of Life Agent
+
+The Catalogue of Life (COL) Agent is a Python-based AI agent for the iChatBio platform. It lets biodiversity researchers, educators, and enthusiasts query global species data using natural language. The agent extracts scientific names from user queries and fetches authoritative taxonomic information from the Catalogue of Life (COL) database.
+
+## Tech Stack
+
+- Language: Python 3.10+
+- LLM Integration: OpenAI SDK
+- Structured Output: Instructor
+- Agent Framework: iChatBio Agent SDK
+- Data Modeling: Pydantic
+- Async API Calls: httpx
+- Configuration: python-dotenv
+
+## Key Components
+- `COL_Agent` – Main agent class
+- `COLClient` – REST client to query COL API
+- `models.py` – Defines species, synonyms, classification, etc.
+
+## Setup & Run
+
+1. **Clone the repo**
+
+   ```bash
+   git clone https://github.com/Krishnamodi1200702/catalogue_of_life_agent.git
+   cd col_agent
+
+2. **Install Dependencies**
+
+   ```bash
+   pip install -r requirements.txt
+
+3. **Setup environment variables**
+   
+   create a .env file and 
+   ```bash
+   OPENAI_API_KEY=your-openai-api-key
+
+4. **Run the agent**
+    
+   ```bash
+   python main.py
+
+## COL API Endpoints used
+
+- GET /nameusage/search?name={query}
