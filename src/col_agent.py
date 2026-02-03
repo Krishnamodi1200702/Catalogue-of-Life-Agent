@@ -480,12 +480,6 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                      results = exact_matches + other_matches[:limit-len(exact_matches)]
                      await process.log(f"Prioritized {len(exact_matches)} exact match(es)")
 
-            # EXISTING CODE CONTINUES:
-            if len(results) == 0:
-                await process.log("No results found")
-                await context.reply(
-                     f"No species found for '{search_term}' in the Catalogue of Life.\n\n" 
-
             if len(results) == 0:
                 await process.log("No results found")
                 await context.reply(
