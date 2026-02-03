@@ -76,7 +76,7 @@ class TaxonDetailsParameters(BaseModel):
     Parameters for retrieving detailed taxonomic information.
     Accepts either a COL taxon ID or a scientific name.
     """
-    query: str = Field(
+    taxon_id: str = Field(
         description=(
             "Catalogue of Life taxon ID (e.g., '4CGXP') or scientific name (e.g., 'Panthera leo'). "
             "If a scientific name is provided, the agent will search for the taxon ID first."
@@ -104,7 +104,7 @@ class GetVernacularNamesParameters(BaseModel):
     """
     Parameters for retrieving vernacular (common) names in multiple languages.
     """
-    query: str = Field(
+    taxon_id: str = Field(
         description=(
             "Taxon ID or scientific name to get common names for. "
             "Example: '4CGXP' or 'Panthera leo'. "
@@ -581,7 +581,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             params: Validated taxon details parameters
         """
         async with context.begin_process(summary="Fetching taxon details") as process:
-            query = params.query.strip()
+            query = params.taxon_id.strip()
             taxon_id = None
             scientific_name = None
             
@@ -841,7 +841,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             params: Validated vernacular names parameters
         """
         async with context.begin_process(summary="Fetching vernacular names") as process:
-            query = params.query.strip()
+            query = params.taxon_id.strip()
             taxon_id = None
             scientific_name = None
             
