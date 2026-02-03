@@ -458,27 +458,28 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             results = data.get("result", [])
             total = data.get("total", 0)
 
+            # Prioritize exact matches for binomial names (e.g., "Rattus rattus")
             if " " in search_term and len(results) > 0:
-                 search_term_lower = search_term.lower().strip()
-    
-                 exact_matches = []
-                 other_matches = []
-    
-                 for item in results:
-                       usage = item.get("usage", {})
-                       name_obj = usage.get("name", {})
-                       scientific_name = name_obj.get("scientificName", "").lower()
-        
-                       # Check for exact match (ignoring authorship)
-                       if scientific_name == search_term_lower:
-                             exact_matches.append(item)
-                       else:
-                             other_matches.append(item)
-    
-                 # Reorder: exact matches first
-                 if exact_matches:
-                     results = exact_matches + other_matches[:limit-len(exact_matches)]
-                     await process.log(f"Prioritized {len(exact_matches)} exact match(es)")
+                search_term_lower = search_term.lower().strip()
+                
+                exact_matches = []
+                other_matches = []
+                
+                for item in results:
+                    usage = item.get("usage", {})
+                    name_obj = usage.get("name", {})
+                    scientific_name = name_obj.get("scientificName", "").lower()
+                    
+                    # Check for exact match (ignoring authorship)
+                    if scientific_name == search_term_lower:
+                        exact_matches.append(item)
+                    else:
+                        other_matches.append(item)
+                
+                # Reorder: exact matches first
+                if exact_matches:
+                    results = exact_matches + other_matches[:limit-len(exact_matches)]
+                    await process.log(f"Prioritized {len(exact_matches)} exact match(es)")
 
             if len(results) == 0:
                 await process.log("No results found")
