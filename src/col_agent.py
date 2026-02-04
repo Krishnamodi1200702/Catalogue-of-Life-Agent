@@ -458,6 +458,15 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             results = data.get("result", [])
             total = data.get("total", 0)
 
+            # Debug: Log what we got from API
+            await process.log(f"Got {len(results)} results from API", data={
+                "total": total,
+                "first_3_names": [
+                    item.get("usage", {}).get("name", {}).get("scientificName", "")
+                    for item in results[:3]
+                ]
+            })
+
             # Prioritize exact matches for binomial names (e.g., "Rattus rattus")
             if " " in search_term and len(results) > 0:
                 search_term_lower = search_term.lower().strip()
