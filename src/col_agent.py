@@ -209,18 +209,18 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 AgentEntrypoint(
                     id="search",
                     description=(
-                        "Search for species using scientific names. "
-                        "Returns taxonomic information including classification, rank, and status. "
-                        "Use this when the user wants to find a species or explore taxonomy."
+                        "Search for species using scientific names when you need to find taxa or get an overview. "
+                        "Returns taxonomic information including classification, rank, and status for multiple matching results. "
+                        "Best for: discovering species, exploring taxonomy, finding taxon IDs, getting quick overviews."
                     ),
                     parameters=SearchParameters
                 ),
                 AgentEntrypoint(
                     id="get_taxon_details",
                     description=(
-                        "Retrieve complete taxonomic details for a specific taxon using its ID or scientific name. "
-                        "Returns full classification, authorship, extinction status, and habitat information. "
-                        "Use this when the user needs comprehensive information about a known species."
+                        "Retrieve comprehensive details for a specific taxon: full classification, authorship, "
+                        "extinction status, habitat information, and direct link to Catalogue of Life page. "
+                        "Best for: complete information about a known species, extinction data, habitat details."
                     ),
                     parameters=TaxonDetailsParameters
                 ),
@@ -229,7 +229,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                     description=(
                         "Get all alternative scientific names (synonyms) for a taxon. "
                         "Returns historical names and nomenclatural variants. "
-                        "Use this when the user asks about alternative names or taxonomic history."
+                        "Best for: taxonomic history, alternative names, nomenclature research."
                     ),
                     parameters=GetSynonymsParameters
                 ),
@@ -238,25 +238,26 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                     description=(
                         "Get common names in various languages for a taxon. "
                         "Returns vernacular names used in different regions and languages. "
-                        "Use this when the user asks for common names or non-scientific names."
+                        "Best for: common names, translations, regional names."
                     ),
                     parameters=GetVernacularNamesParameters
                 ),
                 AgentEntrypoint(
                     id="get_classification",
                     description=(
-                        "Get the complete taxonomic classification hierarchy for a taxon. "
-                        "Returns parent lineage from genus up to domain (bottom-up). "
-                        "Use this when the user asks about taxonomy, classification, or 'what family/order does X belong to'."
+                        "Get ONLY the taxonomic classification hierarchy showing parent lineage from genus up to domain. "
+                        "Returns a clean hierarchy: genus → family → order → class → phylum → kingdom → domain. "
+                        "Best for: answering 'what family/order/class', taxonomic hierarchy questions, parent lineage. "
+                        "More focused than get_taxon_details which includes additional information beyond just classification."
                     ),
                     parameters=GetClassificationParameters
                 ),
                 AgentEntrypoint(
                     id="get_taxon_children",
                     description=(
-                        "Get all child taxa for a given taxon (e.g., all species in a genus, all genera in a family). "
-                        "Returns immediate children only with names, ranks, and status. "
-                        "Use this when the user asks to 'list species in', 'show children of', or 'what's in this genus/family'."
+                        "Get all immediate child taxa of a given taxon (e.g., all species in a genus, all genera in a family). "
+                        "Returns names, ranks, and status for up to 100 children. "
+                        "Best for: exploring taxonomic groups, listing species within a genus, discovering related taxa."
                     ),
                     parameters=GetTaxonChildrenParameters
                 ),
