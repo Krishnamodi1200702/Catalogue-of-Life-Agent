@@ -10,7 +10,7 @@ API Documentation: https://api.checklistbank.org
 Dataset: Catalogue of Life Latest Release (3LR)
 
 Author: Krishna Modi
-Version: 2.0.0
+Version: 2.1.0
 License: MIT
 """
 
@@ -40,6 +40,7 @@ COL_DATASET_KEY = "3LR"
 COL_TIMEOUT = 10
 MAX_SEARCH_RESULTS = 20
 DEFAULT_SEARCH_LIMIT = 5
+DEFAULT_CHILDREN_LIMIT = 20
 
 logging.basicConfig(
     level=logging.INFO,
@@ -114,15 +115,53 @@ class GetVernacularNamesParameters(BaseModel):
     )
 
 
+class GetClassificationParameters(BaseModel):
+    """
+    Parameters for retrieving complete taxonomic classification lineage.
+    Returns the full hierarchy from genus up to domain.
+    """
+    taxon_id: str = Field(
+        description=(
+            "Taxon ID or scientific name to get classification for. "
+            "Example: '4CGXP' or 'Panthera leo'. "
+            "Returns parent lineage from genus to domain."
+        ),
+        examples=["4CGXP", "Panthera leo", "5K5L5", "Homo sapiens"]
+    )
+
+
+class GetTaxonChildrenParameters(BaseModel):
+    """
+    Parameters for retrieving child taxa (e.g., all species in a genus).
+    Returns immediate children only, not full descendant tree.
+    """
+    taxon_id: str = Field(
+        description=(
+            "Taxon ID or scientific name to get children for. "
+            "Example: '6DBT' (genus Panthera) or 'Panthera'. "
+            "Returns all child taxa (e.g., species in a genus)."
+        ),
+        examples=["6DBT", "Panthera", "Felidae", "Carnivora"]
+    )
+    limit: Optional[int] = Field(
+        default=DEFAULT_CHILDREN_LIMIT,
+        description="Maximum number of children to return",
+        ge=1,
+        le=100
+    )
+
+
 class CatalogueOfLifeAgent(IChatBioAgent):
     """
     Main agent class for interacting with the Catalogue of Life database.
     
-    This agent provides four main entrypoints:
+    This agent provides six main entrypoints:
     1. search - Find species by scientific name
     2. get_taxon_details - Retrieve complete taxonomic information
     3. get_synonyms - Get alternative scientific names
     4. get_vernacular_names - Get common names in various languages
+    5. get_classification - Get complete taxonomic hierarchy
+    6. get_taxon_children - Get child taxa for a given taxon
     """
     
     def __init__(self, dataset_key: str = COL_DATASET_KEY, timeout: int = COL_TIMEOUT):
@@ -202,7 +241,25 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                         "Use this when the user asks for common names or non-scientific names."
                     ),
                     parameters=GetVernacularNamesParameters
-                )
+                ),
+                AgentEntrypoint(
+                    id="get_classification",
+                    description=(
+                        "Get the complete taxonomic classification hierarchy for a taxon. "
+                        "Returns parent lineage from genus up to domain (bottom-up). "
+                        "Use this when the user asks about taxonomy, classification, or 'what family/order does X belong to'."
+                    ),
+                    parameters=GetClassificationParameters
+                ),
+                AgentEntrypoint(
+                    id="get_taxon_children",
+                    description=(
+                        "Get all child taxa for a given taxon (e.g., all species in a genus, all genera in a family). "
+                        "Returns immediate children only with names, ranks, and status. "
+                        "Use this when the user asks to 'list species in', 'show children of', or 'what's in this genus/family'."
+                    ),
+                    parameters=GetTaxonChildrenParameters
+                ),
             ]
         )
     
@@ -457,15 +514,6 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             
             results = data.get("result", [])
             total = data.get("total", 0)
-
-            # Debug: Log what we got from API
-            await process.log(f"Got {len(results)} results from API", data={
-                "total": total,
-                "first_3_names": [
-                    item.get("usage", {}).get("name", {}).get("scientificName", "")
-                    for item in results[:3]
-                ]
-            })
 
             # Prioritize exact matches for binomial names (e.g., "Rattus rattus")
             if " " in search_term and len(results) > 0:
@@ -977,13 +1025,268 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             await context.reply(reply_text)
             await process.log("Vernacular names retrieved successfully")
     
+    async def _handle_classification(
+        self,
+        context: ResponseContext,
+        request: str,
+        params: GetClassificationParameters
+    ):
+        """
+        Handle the get_classification entrypoint for retrieving taxonomic hierarchy.
+        
+        Args:
+            context: Response context for communicating with iChatBio
+            request: Original natural language request from user
+            params: Validated classification parameters
+        """
+        async with context.begin_process(summary="Fetching classification hierarchy") as process:
+            query = params.taxon_id.strip()
+            taxon_id = None
+            scientific_name = None
+            
+            if self._is_taxon_id(query):
+                taxon_id = query
+                await process.log(f"Using taxon ID: '{taxon_id}'")
+            else:
+                await process.log(f"Searching for taxon ID using scientific name: '{query}'")
+                result = await self._search_for_taxon_id(process, query)
+                
+                if not result:
+                    await context.reply(
+                        f"No exact match found for '{query}' in the Catalogue of Life.\n"
+                        "Please check the spelling and try again."
+                    )
+                    return
+                
+                taxon_id, scientific_name = result
+            
+            url = f"{COL_BASE_URL}/dataset/{self.dataset_key}/taxon/{taxon_id}/classification"
+            
+            data = await self._make_api_request(process, url, expected_structure="list")
+            
+            if not data:
+                await context.reply(
+                    f"Unable to retrieve classification for taxon ID '{taxon_id}'.\n"
+                    "The taxon may not have classification data available."
+                )
+                return
+            
+            if len(data) == 0:
+                await process.log("No classification data found")
+                display_name = scientific_name if scientific_name else f"taxon ID '{taxon_id}'"
+                await context.reply(
+                    f"No classification hierarchy found for {display_name}.\n"
+                    "This taxon may be at the top of the hierarchy."
+                )
+                return
+            
+            classification_list = []
+            
+            for item in data:
+                try:
+                    class_id = item.get("id", "")
+                    name = item.get("name", "Unknown")
+                    authorship = item.get("authorship", "")
+                    rank = item.get("rank", "Unknown")
+                    
+                    classification_list.append({
+                        "id": class_id,
+                        "name": name,
+                        "authorship": authorship,
+                        "rank": rank
+                    })
+                    
+                except Exception as e:
+                    logger.warning(f"Error processing classification item: {e}")
+                    continue
+            
+            await process.log(
+                f"Retrieved {len(classification_list)} classification levels",
+                data={
+                    "levels": [
+                        {"rank": c["rank"], "name": c["name"]}
+                        for c in classification_list[:5]
+                    ]
+                }
+            )
+            
+            display_name = scientific_name if scientific_name else f"taxon ID {taxon_id}"
+            reply_text = f"**Complete Classification Hierarchy for {display_name}:**\n\n"
+            
+            for item in classification_list:
+                full_name = f"{item['name']} {item['authorship']}".strip()
+                reply_text += f"**{item['rank'].capitalize()}:** {full_name}\n"
+            
+            reply_text += f"\n**Total Levels:** {len(classification_list)}\n\n"
+            reply_text += "See artifact for complete classification data."
+            
+            artifact_data = {
+                "query": query,
+                "taxon_id": taxon_id,
+                "scientific_name": scientific_name or "Not provided",
+                "classification_levels": len(classification_list),
+                "classification": classification_list,
+                "raw_response": data
+            }
+            
+            await self._create_json_artifact(
+                process,
+                artifact_data,
+                f"Classification hierarchy for {scientific_name or taxon_id} - {len(classification_list)} levels",
+                [url],
+                {
+                    "data_source": "Catalogue of Life",
+                    "taxon_id": taxon_id,
+                    "scientific_name": scientific_name or "Unknown",
+                    "levels": len(classification_list)
+                }
+            )
+            
+            await context.reply(reply_text)
+            await process.log("Classification hierarchy retrieved successfully")
+    
+    async def _handle_taxon_children(
+        self,
+        context: ResponseContext,
+        request: str,
+        params: GetTaxonChildrenParameters
+    ):
+        """
+        Handle the get_taxon_children entrypoint for retrieving child taxa.
+        
+        Args:
+            context: Response context for communicating with iChatBio
+            request: Original natural language request from user
+            params: Validated taxon children parameters
+        """
+        async with context.begin_process(summary="Fetching child taxa") as process:
+            query = params.taxon_id.strip()
+            limit = params.limit or DEFAULT_CHILDREN_LIMIT
+            taxon_id = None
+            scientific_name = None
+            
+            if self._is_taxon_id(query):
+                taxon_id = query
+                await process.log(f"Using taxon ID: '{taxon_id}'")
+            else:
+                await process.log(f"Searching for taxon ID using scientific name: '{query}'")
+                result = await self._search_for_taxon_id(process, query)
+                
+                if not result:
+                    await context.reply(
+                        f"No exact match found for '{query}' in the Catalogue of Life.\n"
+                        "Please check the spelling and try again."
+                    )
+                    return
+                
+                taxon_id, scientific_name = result
+            
+            url = f"{COL_BASE_URL}/dataset/{self.dataset_key}/tree/{taxon_id}/children"
+            api_params = {
+                "limit": limit
+            }
+            
+            data = await self._make_api_request(process, url, api_params, expected_structure="dict")
+            
+            if not data:
+                await context.reply(
+                    f"Unable to retrieve children for taxon ID '{taxon_id}'.\n"
+                    "Please verify the ID and try again."
+                )
+                return
+            
+            results = data.get("result", [])
+            total = data.get("total", 0)
+            
+            if len(results) == 0:
+                await process.log("No children found")
+                display_name = scientific_name if scientific_name else f"taxon ID '{taxon_id}'"
+                await context.reply(
+                    f"No child taxa found for {display_name}.\n"
+                    "This taxon may be a terminal node (e.g., species with no subspecies)."
+                )
+                return
+            
+            children_list = []
+            
+            for item in results:
+                try:
+                    child_id = item.get("id", "")
+                    child_name = item.get("name", "Unknown")
+                    child_authorship = item.get("authorship", "")
+                    child_rank = item.get("rank", "Unknown")
+                    child_status = item.get("status", "Unknown")
+                    
+                    children_list.append({
+                        "id": child_id,
+                        "name": child_name,
+                        "authorship": child_authorship,
+                        "rank": child_rank,
+                        "status": child_status
+                    })
+                    
+                except Exception as e:
+                    logger.warning(f"Error processing child taxon: {e}")
+                    continue
+            
+            await process.log(
+                f"Found {total} children, showing {len(children_list)}",
+                data={
+                    "children": [
+                        {"name": c["name"], "rank": c["rank"], "status": c["status"]}
+                        for c in children_list[:10]
+                    ]
+                }
+            )
+            
+            display_name = scientific_name if scientific_name else f"taxon ID {taxon_id}"
+            reply_text = f"**Found {total} child taxa for {display_name}:**\n\n"
+            
+            if total > limit:
+                reply_text += f"*(Showing first {limit} of {total} total)*\n\n"
+            
+            for i, child in enumerate(children_list, 1):
+                full_name = f"{child['name']} {child['authorship']}".strip()
+                reply_text += f"{i}. **{full_name}**\n"
+                reply_text += f"   - Rank: {child['rank']}\n"
+                reply_text += f"   - Status: {child['status']}\n\n"
+            
+            reply_text += "See artifact for complete children data."
+            
+            artifact_data = {
+                "query": query,
+                "taxon_id": taxon_id,
+                "scientific_name": scientific_name or "Not provided",
+                "total_children": total,
+                "showing": len(children_list),
+                "children": children_list,
+                "raw_response": data
+            }
+            
+            await self._create_json_artifact(
+                process,
+                artifact_data,
+                f"Children of {scientific_name or taxon_id} - {len(children_list)} of {total} total",
+                [f"{url}?{urlencode(api_params)}"],
+                {
+                    "data_source": "Catalogue of Life",
+                    "taxon_id": taxon_id,
+                    "scientific_name": scientific_name or "Unknown",
+                    "total_children": total,
+                    "showing": len(children_list)
+                }
+            )
+            
+            await context.reply(reply_text)
+            await process.log("Child taxa retrieved successfully")
+    
     @override
     async def run(
         self,
         context: ResponseContext,
         request: str,
         entrypoint: str,
-        params: Union[SearchParameters, TaxonDetailsParameters, GetSynonymsParameters, GetVernacularNamesParameters]
+        params: Union[SearchParameters, TaxonDetailsParameters, GetSynonymsParameters, GetVernacularNamesParameters, GetClassificationParameters, GetTaxonChildrenParameters]
     ):
         """
         Main agent entry point. Routes requests to the appropriate handler based on entrypoint.
@@ -1007,12 +1310,16 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 await self._handle_get_synonyms(context, request, params)
             elif entrypoint == "get_vernacular_names":
                 await self._handle_vernacular_names(context, request, params)
+            elif entrypoint == "get_classification":
+                await self._handle_classification(context, request, params)
+            elif entrypoint == "get_taxon_children":
+                await self._handle_taxon_children(context, request, params)
             else:
                 error_msg = f"Unknown entrypoint: {entrypoint}"
                 logger.error(error_msg)
                 await context.reply(
                     f"Error: Unrecognized entrypoint '{entrypoint}'.\n"
-                    "Valid entrypoints: search, get_taxon_details, get_synonyms, get_vernacular_names"
+                    "Valid entrypoints: search, get_taxon_details, get_synonyms, get_vernacular_names, get_classification, get_taxon_children"
                 )
         
         except Exception as e:
