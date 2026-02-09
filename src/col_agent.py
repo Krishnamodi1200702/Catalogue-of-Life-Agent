@@ -15,9 +15,10 @@ License: MIT
 
 Changelog:
     2.2.0 - Fixed binomial name search bug (tautonyms like "Rattus rattus" now resolve correctly)
+          - Two-stage search: broad first, then content=SCIENTIFIC_NAME fallback for exact matching
+          - Prefer accepted taxa over synonyms to avoid 404s on synonym IDs
           - Added common name search support via vernacular fallback in _search_for_taxon_id
           - Increased internal search fetch limit to 50 for reliable exact-match finding
-          - Removed 'content: SCIENTIFIC_NAME' parameter that caused genus-over-species ranking
     2.1.0 - Added get_classification and get_taxon_children entrypoints
     2.0.0 - Initial release with search, get_taxon_details, get_synonyms, get_vernacular_names
 """
@@ -335,21 +336,22 @@ class CatalogueOfLifeAgent(IChatBioAgent):
         and the binomial name (tautonym) ranking bug.
         
         Strategy:
-        1. Search the API without content filter (catches scientific names broadly)
-        2. For binomial names: scan results for exact species match instead of
-           trusting API ranking (fixes "Rattus rattus" returning genus Rattus)
-        3. If zero results: retry with content=VERNACULAR to support common names
-           like "lion", "black rat", "common toad"
+        1. Search the API without content filter (broad, catches everything)
+        2. For binomial names: scan results for exact species match
+        3. If no exact match: retry with content=SCIENTIFIC_NAME (narrows to
+           scientific names only, where the species is findable within limit=50)
+        4. Prefer accepted taxa over synonyms to avoid 404s on /taxon/ endpoint
+        5. If zero results from both: try content=VERNACULAR for common names
         
-        Why no 'content: SCIENTIFIC_NAME' parameter?
-            Including it causes the API to tokenize binomial names and match the
-            genus token with higher priority than the full species name. Removing
-            it gives broader results that we can filter client-side.
+        Why two stages?
+            Without content filter, "Rattus rattus" returns 387 results across
+            all fields. The exact species match is beyond position 50. Adding
+            content=SCIENTIFIC_NAME narrows to ~20-30 results where the species
+            is findable. But we try broad first because it catches more cases.
         
-        Why fetch 50 results?
-            The exact species match for tautonyms (e.g., "Rattus rattus") can
-            appear at position 6+ in API results. Fetching 50 ensures we capture
-            it, then our exact-match logic promotes it to position 1.
+        Why prefer accepted?
+            Synonym IDs (e.g., "Bison bison" synonym LWY6) return 404 on the
+            /taxon/ endpoint. Preferring accepted taxa avoids this.
         
         Args:
             process: The current process context for logging
@@ -384,16 +386,25 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             # For binomial names, find exact species match instead of trusting API ranking
             if " " in scientific_name:
                 name_lower = scientific_name.lower().strip()
-                for result in results:
-                    usage = result.get("usage", {})
-                    name_obj = usage.get("name", {})
-                    result_name = name_obj.get("scientificName", "").lower()
-                    if result_name == name_lower:
-                        taxon_id = result.get("id")
-                        found_name = name_obj.get("scientificName", "")
-                        await process.log(f"Found exact binomial match: {found_name} (ID: {taxon_id})")
-                        return (taxon_id, found_name)
-                await process.log(f"No exact binomial match in {len(results)} results, using first result")
+                match = self._find_best_exact_match(results, name_lower)
+                
+                if not match:
+                    # Stage 2: broad search returned too many non-scientific hits (e.g., 387 for
+                    # "Rattus rattus"). Retry with content=SCIENTIFIC_NAME to narrow to ~20-30
+                    # scientific name matches where the species is findable within limit=50.
+                    await process.log(f"No exact match in {len(results)} broad results, retrying with content=SCIENTIFIC_NAME")
+                    sci_params = {"q": scientific_name, "limit": INTERNAL_FETCH_LIMIT, "content": "SCIENTIFIC_NAME"}
+                    sci_data = await self._make_api_request(process, url, sci_params, expected_structure="dict")
+                    if sci_data:
+                        sci_results = sci_data.get("result", [])
+                        await process.log(f"Stage 2 got {len(sci_results)} scientific name results")
+                        match = self._find_best_exact_match(sci_results, name_lower)
+                
+                if match:
+                    await process.log(f"Found exact binomial match: {match[1]} (ID: {match[0]}, status: {match[2]})")
+                    return (match[0], match[1])
+                
+                await process.log(f"No exact binomial match found in either search stage")
             
             # For single-word names or when no exact binomial match: use first result
             first_result = results[0]
@@ -466,6 +477,39 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 lines.append(f"- {rank.capitalize()}: {taxonomy[rank]}")
         return "\n".join(lines)
     
+    def _find_best_exact_match(self, results, name_lower):
+        """
+        Scan search results for an exact scientific name match.
+        Prefers accepted taxa over synonyms to avoid 404s on /taxon/ endpoint.
+        
+        Args:
+            results: List of search result items from the API
+            name_lower: Lowercased scientific name to match
+            
+        Returns:
+            Tuple of (taxon_id, scientific_name, status) or None
+        """
+        accepted_match = None
+        any_match = None
+        
+        for result in results:
+            usage = result.get("usage", {})
+            name_obj = usage.get("name", {})
+            result_name = name_obj.get("scientificName", "").lower()
+            
+            if result_name == name_lower:
+                taxon_id = result.get("id")
+                found_name = name_obj.get("scientificName", "")
+                status = usage.get("status", "").lower()
+                
+                if status == "accepted":
+                    return (taxon_id, found_name, status)
+                
+                if any_match is None:
+                    any_match = (taxon_id, found_name, status)
+        
+        return any_match
+    
     # Entrypoint Handlers
     
     async def _handle_search(self, context, request, params):
@@ -505,19 +549,36 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             # Prioritize exact matches for binomial names (tautonym fix)
             if " " in search_term and len(results) > 0:
                 search_term_lower = search_term.lower().strip()
-                exact_matches = []
-                other_matches = []
-                for item in results:
-                    usage = item.get("usage", {})
-                    name_obj = usage.get("name", {})
-                    scientific_name = name_obj.get("scientificName", "").lower()
-                    if scientific_name == search_term_lower:
-                        exact_matches.append(item)
-                    else:
-                        other_matches.append(item)
+                exact_matches = [item for item in results
+                                 if item.get("usage", {}).get("name", {}).get("scientificName", "").lower() == search_term_lower]
+                other_matches = [item for item in results
+                                 if item.get("usage", {}).get("name", {}).get("scientificName", "").lower() != search_term_lower]
+                
+                if not exact_matches:
+                    # Stage 2: retry with content=SCIENTIFIC_NAME to narrow results
+                    await process.log(f"No exact match in {len(results)} broad results, retrying with content=SCIENTIFIC_NAME")
+                    sci_params = {"q": search_term, "limit": INTERNAL_FETCH_LIMIT, "content": "SCIENTIFIC_NAME"}
+                    sci_data = await self._make_api_request(process, url, sci_params)
+                    if sci_data:
+                        sci_results = sci_data.get("result", [])
+                        await process.log(f"Stage 2 got {len(sci_results)} scientific name results")
+                        sci_exact = [item for item in sci_results
+                                     if item.get("usage", {}).get("name", {}).get("scientificName", "").lower() == search_term_lower]
+                        sci_others = [item for item in sci_results
+                                      if item.get("usage", {}).get("name", {}).get("scientificName", "").lower() != search_term_lower]
+                        if sci_exact:
+                            # Use stage 2 results entirely since they're more relevant
+                            exact_matches = sci_exact
+                            other_matches = sci_others
+                            total = sci_data.get("total", total)
+                
                 if exact_matches:
+                    # Prefer accepted taxa over synonyms to avoid 404s
+                    accepted = [item for item in exact_matches if item.get("usage", {}).get("status", "").lower() == "accepted"]
+                    non_accepted = [item for item in exact_matches if item.get("usage", {}).get("status", "").lower() != "accepted"]
+                    exact_matches = accepted + non_accepted
                     results = exact_matches + other_matches
-                    await process.log(f"Prioritized {len(exact_matches)} exact binomial match(es)")
+                    await process.log(f"Prioritized {len(exact_matches)} exact binomial match(es) ({len(accepted)} accepted)")
             
             # If no results, try vernacular (common name) fallback
             resolved_from_common = False
