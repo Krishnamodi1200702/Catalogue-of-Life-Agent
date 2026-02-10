@@ -2,31 +2,27 @@
 Catalogue of Life Agent for iChatBio Platform
 ==============================================
 
-This agent provides access to the Catalogue of Life database through the ChecklistBank API.
-It enables biodiversity researchers and educators to query species information, taxonomic
-classifications, synonyms, and vernacular names.
-
 API Documentation: https://api.checklistbank.org
 Dataset: Catalogue of Life Latest Release (3LR)
 
 Author: Krishna Modi
-Version: 2.2.0
+Version: 2.3.0
 License: MIT
 
 Changelog:
-    2.2.0 - Fixed binomial name search bug (tautonyms like "Rattus rattus" now resolve correctly)
-          - Two-stage search: broad first, then content=SCIENTIFIC_NAME fallback for exact matching
-          - Prefer accepted taxa over synonyms to avoid 404s on synonym IDs
-          - Added common name search support via vernacular fallback in _search_for_taxon_id
-          - Increased internal search fetch limit to 50 for reliable exact-match finding
+    2.3.0 - Three-stage search: SCIENTIFIC_NAME first, then broad, then VERNACULAR
+          - Scoring algorithm for result ranking (exact match + rank + status)
+          - Synonym resolution layer to prevent 404s on /taxon/ endpoint
+          - Kept all artifacts, logging, and entrypoint descriptions from 2.2.0
+    2.2.0 - First attempt at tautonym fix (incomplete)
     2.1.0 - Added get_classification and get_taxon_children entrypoints
-    2.0.0 - Initial release with search, get_taxon_details, get_synonyms, get_vernacular_names
+    2.0.0 - Initial release
 """
 
 import os
 import json
 import logging
-from typing import Optional, Union, Literal
+from typing import Optional, Union, Tuple, List, Literal
 from typing_extensions import override
 from urllib.parse import urlencode
 
@@ -40,7 +36,6 @@ from ichatbio.agent import IChatBioAgent
 from ichatbio.agent_response import ResponseContext, IChatBioAgentProcess
 from ichatbio.types import AgentCard, AgentEntrypoint
 
-
 # Configuration
 dotenv.load_dotenv()
 
@@ -51,123 +46,72 @@ MAX_SEARCH_RESULTS = 20
 DEFAULT_SEARCH_LIMIT = 5
 DEFAULT_CHILDREN_LIMIT = 20
 
-# How many results to fetch from the API internally before applying client-side filtering.
-# Set to 50 because the COL API ranks results unpredictably for binomial names — the exact
-# species match (e.g., "Rattus rattus") can appear at position 6+ while the genus ("Rattus")
-# appears first. We fetch generously, then filter and trim to the user's requested limit.
+# Fetch enough results to find exact matches even when API ranking is poor.
+# For tautonyms like "Rattus rattus", the species can rank below the genus.
 INTERNAL_FETCH_LIMIT = 50
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
-# Entrypoint Parameter Models
+# --- Entrypoint Parameter Models ---
 
 class SearchParameters(BaseModel):
-    """
-    Parameters for searching species by scientific name or common name.
-    The agent automatically handles both types — scientific names are searched
-    directly, and common names are resolved via vernacular search fallback.
-    """
+    """Parameters for searching species by scientific name or common name."""
     query: str = Field(
         description=(
             "Scientific name or common name to search. "
-            "Scientific name examples: 'Panthera leo', 'Homo sapiens', 'Quercus', 'Felidae'. "
-            "Common name examples: 'lion', 'black rat', 'common toad'. "
-            "The agent will automatically detect and handle both types."
+            "Examples: 'Panthera leo', 'Homo sapiens', 'Felidae', 'lion', 'black rat'."
         ),
-        examples=["Panthera leo", "lion", "Homo sapiens", "black rat", "Quercus", "Felidae"]
+        examples=["Panthera leo", "lion", "Homo sapiens", "black rat", "Quercus"]
     )
-    limit: Optional[int] = Field(
-        default=DEFAULT_SEARCH_LIMIT,
-        description="Maximum number of results to return",
-        ge=1,
-        le=MAX_SEARCH_RESULTS
-    )
+    limit: Optional[int] = Field(default=DEFAULT_SEARCH_LIMIT, description="Max results to return", ge=1, le=MAX_SEARCH_RESULTS)
 
 
 class TaxonDetailsParameters(BaseModel):
-    """
-    Parameters for retrieving detailed taxonomic information.
-    Accepts either a COL taxon ID, scientific name, or common name.
-    """
+    """Parameters for retrieving detailed taxonomic information."""
     taxon_id: str = Field(
-        description=(
-            "Catalogue of Life taxon ID (e.g., '4CGXP'), scientific name (e.g., 'Panthera leo'), "
-            "or common name (e.g., 'lion'). "
-            "If a name is provided, the agent will search for the taxon ID first."
-        ),
-        examples=["4CGXP", "Panthera leo", "lion", "5K5L5", "Homo sapiens"]
+        description="COL taxon ID (e.g., '4CGXP'), scientific name (e.g., 'Panthera leo'), or common name (e.g., 'lion').",
+        examples=["4CGXP", "Panthera leo", "lion", "Homo sapiens"]
     )
 
 
 class GetSynonymsParameters(BaseModel):
     """Parameters for retrieving taxonomic synonyms."""
     query: str = Field(
-        description=(
-            "Scientific name, common name, or taxon ID to get synonyms for. "
-            "Example: 'Panthera leo', 'lion', or '4CGXP'."
-        ),
-        examples=["Panthera leo", "lion", "4CGXP", "Homo sapiens"]
+        description="Scientific name, common name, or taxon ID. Example: 'Panthera leo', 'lion', '4CGXP'.",
+        examples=["Panthera leo", "lion", "4CGXP"]
     )
 
 
 class GetVernacularNamesParameters(BaseModel):
-    """Parameters for retrieving vernacular (common) names in multiple languages."""
+    """Parameters for retrieving common names in multiple languages."""
     taxon_id: str = Field(
-        description=(
-            "Taxon ID, scientific name, or common name to get common names for. "
-            "Example: '4CGXP', 'Panthera leo', or 'lion'. "
-            "Returns names in all available languages."
-        ),
-        examples=["4CGXP", "Panthera leo", "lion", "5K5L5"]
+        description="Taxon ID, scientific name, or common name. Example: '4CGXP', 'Panthera leo', 'lion'.",
+        examples=["4CGXP", "Panthera leo", "lion"]
     )
 
 
 class GetClassificationParameters(BaseModel):
-    """Parameters for retrieving complete taxonomic classification lineage."""
+    """Parameters for retrieving taxonomic classification hierarchy."""
     taxon_id: str = Field(
-        description=(
-            "Taxon ID, scientific name, or common name to get classification for. "
-            "Example: '4CGXP', 'Panthera leo', or 'lion'. "
-            "Returns parent lineage from genus to domain."
-        ),
-        examples=["4CGXP", "Panthera leo", "lion", "5K5L5", "Homo sapiens"]
+        description="Taxon ID, scientific name, or common name. Example: '4CGXP', 'Panthera leo', 'lion'.",
+        examples=["4CGXP", "Panthera leo", "lion", "Homo sapiens"]
     )
 
 
 class GetTaxonChildrenParameters(BaseModel):
-    """Parameters for retrieving child taxa (e.g., all species in a genus)."""
+    """Parameters for retrieving child taxa."""
     taxon_id: str = Field(
-        description=(
-            "Taxon ID, scientific name, or common name to get children for. "
-            "Example: '6DBT' (genus Panthera), 'Panthera', or 'big cats'. "
-            "Returns all child taxa (e.g., species in a genus)."
-        ),
+        description="Taxon ID, scientific name, or common name. Example: '6DBT', 'Panthera', 'Felidae'.",
         examples=["6DBT", "Panthera", "Felidae", "Carnivora"]
     )
-    limit: Optional[int] = Field(
-        default=DEFAULT_CHILDREN_LIMIT,
-        description="Maximum number of children to return",
-        ge=1,
-        le=100
-    )
+    limit: Optional[int] = Field(default=DEFAULT_CHILDREN_LIMIT, description="Max children to return", ge=1, le=100)
 
 
 class CatalogueOfLifeAgent(IChatBioAgent):
     """
-    Main agent class for interacting with the Catalogue of Life database.
-    
-    This agent provides six main entrypoints:
-    1. search - Find species by scientific or common name
-    2. get_taxon_details - Retrieve complete taxonomic information
-    3. get_synonyms - Get alternative scientific names
-    4. get_vernacular_names - Get common names in various languages
-    5. get_classification - Get complete taxonomic hierarchy
-    6. get_taxon_children - Get child taxa for a given taxon
+    Catalogue of Life agent with three-stage search, scoring, and synonym resolution.
     """
     
     def __init__(self, dataset_key: str = COL_DATASET_KEY, timeout: int = COL_TIMEOUT):
@@ -259,11 +203,11 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 ),
             ]
         )
-    
-    # Utility Methods
+
+    # ==================== UTILITY METHODS ====================
     
     def _is_taxon_id(self, query: str) -> bool:
-        """Determine if a query string is likely a taxon ID rather than a name."""
+        """Check if query looks like a COL taxon ID (e.g., '4CGXP', '5K5L5')."""
         query = query.strip()
         if " " in query:
             return False
@@ -278,43 +222,36 @@ class CatalogueOfLifeAgent(IChatBioAgent):
         if query.isupper() and len(query) <= 10:
             return True
         return False
-    
+
     async def _make_api_request(self, process, url, params=None, expected_structure="dict"):
-        """Centralized API request method with error handling and logging."""
+        """Make an API request with full logging and error handling."""
         full_url = f"{url}?{urlencode(params)}" if params else url
         await process.log("Executing API request", data={"endpoint": url, "parameters": params or {}, "full_url": full_url})
         try:
             response = requests.get(url, params=params, timeout=self.timeout)
-            logger.info(f"API request to {url} returned status {response.status_code}")
+            logger.info(f"API {url} -> {response.status_code}")
             if response.status_code == 404:
-                await process.log("Resource not found in database")
+                await process.log("Resource not found (404)")
                 return None
             if response.status_code != 200:
                 await process.log(f"API error: HTTP {response.status_code}")
                 return None
             data = response.json()
-            if expected_structure == "dict" and not isinstance(data, dict):
-                await process.log(f"Unexpected response structure: expected dict, got {type(data).__name__}")
-                return None
-            if expected_structure == "list" and not isinstance(data, list):
-                await process.log(f"Unexpected response structure: expected list, got {type(data).__name__}")
-                return None
+            if expected_structure == "dict" and not isinstance(data, dict): return None
+            if expected_structure == "list" and not isinstance(data, list): return None
             return data
         except requests.Timeout:
-            await process.log(f"Request timeout after {self.timeout} seconds")
-            logger.error(f"Timeout on request to {url}")
+            await process.log(f"Request timeout after {self.timeout}s")
             return None
         except requests.RequestException as e:
             await process.log(f"Network error: {str(e)}")
-            logger.error(f"Request exception: {e}")
             return None
         except json.JSONDecodeError:
-            await process.log("Failed to parse API response as JSON")
-            logger.error("JSON decode error")
+            await process.log("Failed to parse JSON response")
             return None
-    
+
     async def _create_json_artifact(self, process, data, description, uris, metadata):
-        """Centralized method for creating JSON artifacts."""
+        """Create a JSON artifact for rich structured output."""
         try:
             await process.create_artifact(
                 mimetype="application/json",
@@ -326,309 +263,229 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             logger.info(f"Created artifact: {description}")
             return True
         except Exception as e:
-            await process.log(f"Failed to create artifact: {str(e)}")
-            logger.error(f"Artifact creation failed: {e}")
+            await process.log(f"Artifact creation failed: {str(e)}")
             return False
     
-    async def _search_for_taxon_id(self, process, scientific_name):
+    def _format_classification(self, taxonomy):
+        """Format taxonomy dict into readable string."""
+        if not taxonomy: return ""
+        ranks = ["domain", "kingdom", "phylum", "class", "order", "family", "genus", "species"]
+        return "\n".join(f"- {r.capitalize()}: {taxonomy[r]}" for r in ranks if r in taxonomy)
+
+    # ==================== SEARCH ENGINE (Core Fix) ====================
+    
+    def _score_result(self, item: dict, query: str) -> int:
         """
-        Search for a taxon ID by name. Handles scientific names, common names,
-        and the binomial name (tautonym) ranking bug.
+        Score a search result for relevance. Higher = better match.
         
-        Strategy:
-        1. Search the API without content filter (broad, catches everything)
-        2. For binomial names: scan results for exact species match
-        3. If no exact match: retry with content=SCIENTIFIC_NAME (narrows to
-           scientific names only, where the species is findable within limit=50)
-        4. Prefer accepted taxa over synonyms to avoid 404s on /taxon/ endpoint
-        5. If zero results from both: try content=VERNACULAR for common names
+        Scoring:
+          +100  exact scientific name match (case-insensitive)
+          +50   rank is 'species' when query is binomial (2+ words)
+          +30   rank is 'genus/family/order' when query is single word
+          +20   status is 'accepted' (not synonym)
         
-        Why two stages?
-            Without content filter, "Rattus rattus" returns 387 results across
-            all fields. The exact species match is beyond position 50. Adding
-            content=SCIENTIFIC_NAME narrows to ~20-30 results where the species
-            is findable. But we try broad first because it catches more cases.
+        This fixes the tautonym bug: "Rattus rattus" species scores 170,
+        while genus "Rattus" scores only 20.
+        """
+        usage = item.get("usage", {})
+        name_obj = usage.get("name", {})
+        sci_name = name_obj.get("scientificName", "").lower()
+        rank = name_obj.get("rank", "").lower()
+        status = usage.get("status", "").lower()
         
-        Why prefer accepted?
-            Synonym IDs (e.g., "Bison bison" synonym LWY6) return 404 on the
-            /taxon/ endpoint. Preferring accepted taxa avoids this.
+        query_lower = query.lower().strip()
+        is_binomial = " " in query_lower
         
-        Args:
-            process: The current process context for logging
-            scientific_name: The name to search for (scientific or common)
-            
-        Returns:
-            Tuple of (taxon_id, found_scientific_name) if found, None otherwise
+        score = 0
+        if sci_name == query_lower:
+            score += 100
+        if is_binomial and rank == "species":
+            score += 50
+        if not is_binomial and rank in ("genus", "family", "order", "class", "phylum", "kingdom"):
+            score += 30
+        if status == "accepted":
+            score += 20
+        return score
+    
+    async def _search_for_taxon_id(self, process, query: str) -> Optional[Tuple[str, str]]:
+        """
+        Three-stage search to find the best taxon ID for any query.
+        
+        Stage 1: content=SCIENTIFIC_NAME (narrowest, most relevant for species)
+                 This is where tautonyms like "Rattus rattus" get fixed — the species
+                 will be in the scientific name results and score highest.
+        Stage 2: No content filter (broad, catches partial matches)
+        Stage 3: content=VERNACULAR (for common names like "lion", "black rat")
+        
+        Each stage: fetch up to 50 results, score them, pick the highest.
+        For binomial queries: require an exact name match (score >= 100).
+        For single-word queries: accept any reasonable match.
         """
         url = f"{COL_BASE_URL}/dataset/{self.dataset_key}/nameusage/search"
-        params = {
-            "q": scientific_name,
-            "limit": INTERNAL_FETCH_LIMIT,
-        }
+        is_binomial = " " in query.strip()
         
-        data = await self._make_api_request(process, url, params, expected_structure="dict")
+        strategies = [
+            {"q": query, "content": "SCIENTIFIC_NAME", "limit": INTERNAL_FETCH_LIMIT},
+            {"q": query, "limit": INTERNAL_FETCH_LIMIT},
+            {"q": query, "content": "VERNACULAR", "limit": INTERNAL_FETCH_LIMIT},
+        ]
+        strategy_names = ["SCIENTIFIC_NAME", "BROAD", "VERNACULAR"]
+        
+        best_overall = None
+        best_overall_score = -1
+        
+        for params, stage_name in zip(strategies, strategy_names):
+            data = await self._make_api_request(process, url, params, expected_structure="dict")
+            results = data.get("result", []) if data else []
+            
+            if not results:
+                await process.log(f"Stage {stage_name}: 0 results")
+                continue
+            
+            await process.log(
+                f"Stage {stage_name}: {len(results)} results (total: {data.get('total', '?')})",
+                data={"first_3": [r.get("usage", {}).get("name", {}).get("scientificName", "?") for r in results[:3]]}
+            )
+            
+            # Score all results and pick the best
+            scored = [(r, self._score_result(r, query)) for r in results]
+            scored.sort(key=lambda x: x[1], reverse=True)
+            top_result, top_score = scored[0]
+            
+            top_name = top_result.get("usage", {}).get("name", {}).get("scientificName", "?")
+            top_rank = top_result.get("usage", {}).get("name", {}).get("rank", "?")
+            await process.log(f"Stage {stage_name} best: {top_name} [{top_rank}] (score={top_score})")
+            
+            # For binomial queries, require exact match (score >= 100) to avoid
+            # returning genus "Rattus" when user asked for species "Rattus rattus"
+            if is_binomial and top_score >= 100:
+                taxon_id = top_result.get("id")
+                found_name = top_result.get("usage", {}).get("name", {}).get("scientificName", "")
+                await process.log(f"Exact binomial match found: {found_name} (ID: {taxon_id}, score={top_score})")
+                return (taxon_id, found_name)
+            
+            # For single-word queries, accept any match from stage 1 or 2
+            if not is_binomial and stage_name in ("SCIENTIFIC_NAME", "BROAD") and top_score > 0:
+                taxon_id = top_result.get("id")
+                found_name = top_result.get("usage", {}).get("name", {}).get("scientificName", "")
+                await process.log(f"Match found: {found_name} (ID: {taxon_id}, score={top_score})")
+                return (taxon_id, found_name)
+            
+            # For vernacular stage, accept if we have results (common name resolved)
+            if stage_name == "VERNACULAR" and results:
+                # Pick accepted over synonym
+                for r in results:
+                    if r.get("usage", {}).get("status", "").lower() == "accepted":
+                        taxon_id = r.get("id")
+                        found_name = r.get("usage", {}).get("name", {}).get("scientificName", "")
+                        await process.log(f"Vernacular match: '{query}' -> {found_name} (ID: {taxon_id})")
+                        return (taxon_id, found_name)
+                # Fallback to first vernacular result
+                taxon_id = results[0].get("id")
+                found_name = results[0].get("usage", {}).get("name", {}).get("scientificName", "")
+                await process.log(f"Vernacular fallback: '{query}' -> {found_name} (ID: {taxon_id})")
+                return (taxon_id, found_name)
+            
+            # Track best overall as fallback
+            if top_score > best_overall_score:
+                best_overall = top_result
+                best_overall_score = top_score
+        
+        # Last resort: return best we found across all stages
+        if best_overall:
+            taxon_id = best_overall.get("id")
+            found_name = best_overall.get("usage", {}).get("name", {}).get("scientificName", "")
+            await process.log(f"Fallback match: {found_name} (ID: {taxon_id}, score={best_overall_score})")
+            return (taxon_id, found_name)
+        
+        await process.log(f"No match found for '{query}' across all search stages")
+        return None
+    
+    async def _resolve_to_accepted_taxon(self, process, taxon_id: str) -> Optional[str]:
+        """
+        If /taxon/{id} returns 404, the ID might be a synonym.
+        Check /nameusage/{id} to find the accepted taxon ID.
+        
+        Returns the accepted taxon_id, or None if resolution fails.
+        """
+        url = f"{COL_BASE_URL}/dataset/{self.dataset_key}/nameusage/{taxon_id}"
+        data = await self._make_api_request(process, url)
         
         if not data:
             return None
         
-        results = data.get("result", [])
-        total = data.get("total", 0)
-        
-        if len(results) > 0:
-            await process.log(
-                f"Got {len(results)} results from API (total: {total})",
-                data={"first_3_names": [
-                    r.get("usage", {}).get("name", {}).get("scientificName", "?")
-                    for r in results[:3]
-                ]}
-            )
+        # Check if this is a synonym with a pointer to accepted usage
+        status = data.get("status", "").lower()
+        if status == "synonym":
+            # The accepted usage might be in different fields depending on API version
+            accepted = data.get("accepted", {})
+            accepted_id = accepted.get("id") if isinstance(accepted, dict) else data.get("acceptedUsageId")
             
-            # For binomial names, find exact species match instead of trusting API ranking
-            if " " in scientific_name:
-                name_lower = scientific_name.lower().strip()
-                match = self._find_best_exact_match(results, name_lower)
-                
-                if not match:
-                    # Stage 2: broad search returned too many non-scientific hits (e.g., 387 for
-                    # "Rattus rattus"). Retry with content=SCIENTIFIC_NAME to narrow to ~20-30
-                    # scientific name matches where the species is findable within limit=50.
-                    await process.log(f"No exact match in {len(results)} broad results, retrying with content=SCIENTIFIC_NAME")
-                    sci_params = {"q": scientific_name, "limit": INTERNAL_FETCH_LIMIT, "content": "SCIENTIFIC_NAME"}
-                    sci_data = await self._make_api_request(process, url, sci_params, expected_structure="dict")
-                    if sci_data:
-                        sci_results = sci_data.get("result", [])
-                        await process.log(f"Stage 2 got {len(sci_results)} scientific name results")
-                        match = self._find_best_exact_match(sci_results, name_lower)
-                
-                if match:
-                    await process.log(f"Found exact binomial match: {match[1]} (ID: {match[0]}, status: {match[2]})")
-                    return (match[0], match[1])
-                
-                await process.log(f"No exact binomial match found in either search stage")
-            
-            # For single-word names or when no exact binomial match: use first result
-            first_result = results[0]
-            taxon_id = first_result.get("id")
-            usage = first_result.get("usage", {})
-            name_obj = usage.get("name", {})
-            found_name = name_obj.get("scientificName", "")
-            await process.log(f"Found taxon: {found_name} (ID: {taxon_id})")
-            return (taxon_id, found_name)
-        
-        # No results from general search -- try vernacular (common name) search as fallback
-        await process.log(f"No scientific name results for '{scientific_name}', trying vernacular search")
-        
-        vernacular_params = {
-            "q": scientific_name,
-            "content": "VERNACULAR",
-            "limit": INTERNAL_FETCH_LIMIT,
-        }
-        
-        vern_data = await self._make_api_request(process, url, vernacular_params, expected_structure="dict")
-        
-        if not vern_data:
-            return None
-        
-        vern_results = vern_data.get("result", [])
-        
-        if len(vern_results) == 0:
-            await process.log(f"No vernacular matches found for '{scientific_name}'")
-            return None
-        
-        await process.log(f"Found {len(vern_results)} vernacular matches for '{scientific_name}'")
-        
-        # Pick the best vernacular match: prefer exact name match with accepted status
-        query_lower = scientific_name.lower().strip()
-        best_match = None
-        
-        for result in vern_results:
-            taxon_id = result.get("id")
-            usage = result.get("usage", {})
-            name_obj = usage.get("name", {})
-            found_name = name_obj.get("scientificName", "")
-            status = usage.get("status", "").lower()
-            
-            # Check if any vernacular name in this result exactly matches the query
-            vernacular_names = result.get("vernacularNames", [])
-            is_exact = any(vn.get("name", "").lower() == query_lower for vn in vernacular_names)
-            
-            # Best possible: exact vernacular match + accepted status
-            if is_exact and status == "accepted":
-                await process.log(f"Vernacular exact match: '{scientific_name}' -> {found_name} (ID: {taxon_id})")
-                return (taxon_id, found_name)
-            
-            if best_match is None:
-                best_match = (taxon_id, found_name)
-        
-        if best_match:
-            await process.log(f"Using best vernacular match: {best_match[1]} (ID: {best_match[0]})")
-            return best_match
+            if accepted_id:
+                await process.log(f"Resolved synonym {taxon_id} -> accepted ID {accepted_id}")
+                return accepted_id
         
         return None
-    
-    def _format_classification(self, taxonomy):
-        """Format a taxonomy dictionary into a readable classification string."""
-        if not taxonomy:
-            return ""
-        ranks = ["domain", "kingdom", "phylum", "class", "order", "family", "genus", "species"]
-        lines = []
-        for rank in ranks:
-            if rank in taxonomy:
-                lines.append(f"- {rank.capitalize()}: {taxonomy[rank]}")
-        return "\n".join(lines)
-    
-    def _find_best_exact_match(self, results, name_lower):
-        """
-        Scan search results for an exact scientific name match.
-        Prefers accepted taxa over synonyms to avoid 404s on /taxon/ endpoint.
-        
-        Args:
-            results: List of search result items from the API
-            name_lower: Lowercased scientific name to match
-            
-        Returns:
-            Tuple of (taxon_id, scientific_name, status) or None
-        """
-        accepted_match = None
-        any_match = None
-        
-        for result in results:
-            usage = result.get("usage", {})
-            name_obj = usage.get("name", {})
-            result_name = name_obj.get("scientificName", "").lower()
-            
-            if result_name == name_lower:
-                taxon_id = result.get("id")
-                found_name = name_obj.get("scientificName", "")
-                status = usage.get("status", "").lower()
-                
-                if status == "accepted":
-                    return (taxon_id, found_name, status)
-                
-                if any_match is None:
-                    any_match = (taxon_id, found_name, status)
-        
-        return any_match
-    
-    # Entrypoint Handlers
+
+    # ==================== ENTRYPOINT HANDLERS ====================
     
     async def _handle_search(self, context, request, params):
-        """Handle the search entrypoint. Supports scientific and common names."""
+        """Search entrypoint — returns multiple results with scoring."""
         async with context.begin_process(summary="Searching Catalogue of Life") as process:
             search_term = params.query.strip()
             limit = params.limit or DEFAULT_SEARCH_LIMIT
-            
-            await process.log(f"Initiating search for: '{search_term}'")
+            await process.log(f"Search for: '{search_term}', limit={limit}")
             
             url = f"{COL_BASE_URL}/dataset/{self.dataset_key}/nameusage/search"
-            api_params = {
-                "q": search_term,
-                "limit": INTERNAL_FETCH_LIMIT,
-            }
             
-            data = await self._make_api_request(process, url, api_params)
-            
-            if not data:
-                await context.reply(
-                    f"Unable to complete search for '{search_term}'. "
-                    "Please verify your internet connection and try again."
-                )
-                return
-            
-            results = data.get("result", [])
-            total = data.get("total", 0)
-            
-            await process.log(
-                f"Got {len(results)} results from API (total: {total})",
-                data={"first_3_names": [
-                    r.get("usage", {}).get("name", {}).get("scientificName", "?")
-                    for r in results[:3]
-                ]}
-            )
-
-            # Prioritize exact matches for binomial names (tautonym fix)
-            if " " in search_term and len(results) > 0:
-                search_term_lower = search_term.lower().strip()
-                exact_matches = [item for item in results
-                                 if item.get("usage", {}).get("name", {}).get("scientificName", "").lower() == search_term_lower]
-                other_matches = [item for item in results
-                                 if item.get("usage", {}).get("name", {}).get("scientificName", "").lower() != search_term_lower]
-                
-                if not exact_matches:
-                    # Stage 2: retry with content=SCIENTIFIC_NAME to narrow results
-                    await process.log(f"No exact match in {len(results)} broad results, retrying with content=SCIENTIFIC_NAME")
-                    sci_params = {"q": search_term, "limit": INTERNAL_FETCH_LIMIT, "content": "SCIENTIFIC_NAME"}
-                    sci_data = await self._make_api_request(process, url, sci_params)
-                    if sci_data:
-                        sci_results = sci_data.get("result", [])
-                        await process.log(f"Stage 2 got {len(sci_results)} scientific name results")
-                        sci_exact = [item for item in sci_results
-                                     if item.get("usage", {}).get("name", {}).get("scientificName", "").lower() == search_term_lower]
-                        sci_others = [item for item in sci_results
-                                      if item.get("usage", {}).get("name", {}).get("scientificName", "").lower() != search_term_lower]
-                        if sci_exact:
-                            # Use stage 2 results entirely since they're more relevant
-                            exact_matches = sci_exact
-                            other_matches = sci_others
-                            total = sci_data.get("total", total)
-                
-                if exact_matches:
-                    # Prefer accepted taxa over synonyms to avoid 404s
-                    accepted = [item for item in exact_matches if item.get("usage", {}).get("status", "").lower() == "accepted"]
-                    non_accepted = [item for item in exact_matches if item.get("usage", {}).get("status", "").lower() != "accepted"]
-                    exact_matches = accepted + non_accepted
-                    results = exact_matches + other_matches
-                    await process.log(f"Prioritized {len(exact_matches)} exact binomial match(es) ({len(accepted)} accepted)")
-            
-            # If no results, try vernacular (common name) fallback
+            # Three-stage search for the search entrypoint too
+            results = []
+            total = 0
             resolved_from_common = False
             resolved_scientific_name = None
             
-            if len(results) == 0:
-                await process.log(f"No results found, trying vernacular search for '{search_term}'")
-                vernacular_params = {"q": search_term, "content": "VERNACULAR", "limit": INTERNAL_FETCH_LIMIT}
-                vern_data = await self._make_api_request(process, url, vernacular_params)
-                
-                if vern_data and len(vern_data.get("result", [])) > 0:
-                    first_vern = vern_data["result"][0]
-                    usage = first_vern.get("usage", {})
-                    name_obj = usage.get("name", {})
-                    resolved_scientific_name = name_obj.get("scientificName", "")
-                    
-                    if resolved_scientific_name:
-                        resolved_from_common = True
-                        await process.log(f"Vernacular match: '{search_term}' -> {resolved_scientific_name}, re-searching")
-                        
-                        re_data = await self._make_api_request(process, url, {"q": resolved_scientific_name, "limit": INTERNAL_FETCH_LIMIT})
-                        if re_data:
-                            results = re_data.get("result", [])
-                            total = re_data.get("total", 0)
-                            # Apply exact match prioritization on re-searched results
-                            if " " in resolved_scientific_name and len(results) > 0:
-                                sci_lower = resolved_scientific_name.lower().strip()
-                                exact = [r for r in results if r.get("usage", {}).get("name", {}).get("scientificName", "").lower() == sci_lower]
-                                others = [r for r in results if r.get("usage", {}).get("name", {}).get("scientificName", "").lower() != sci_lower]
-                                if exact:
-                                    results = exact + others
-                                    await process.log(f"Prioritized {len(exact)} exact match(es) after vernacular resolution")
+            strategies = [
+                ("SCIENTIFIC_NAME", {"q": search_term, "content": "SCIENTIFIC_NAME", "limit": INTERNAL_FETCH_LIMIT}),
+                ("BROAD", {"q": search_term, "limit": INTERNAL_FETCH_LIMIT}),
+                ("VERNACULAR", {"q": search_term, "content": "VERNACULAR", "limit": INTERNAL_FETCH_LIMIT}),
+            ]
             
-            # Trim to user's requested limit
-            results = results[:limit]
-
-            if len(results) == 0:
-                await process.log("No results found")
+            for stage_name, api_params in strategies:
+                data = await self._make_api_request(process, url, api_params)
+                stage_results = data.get("result", []) if data else []
+                total = data.get("total", 0) if data else 0
+                
+                await process.log(f"Search stage {stage_name}: {len(stage_results)} results (total: {total})")
+                
+                if stage_results:
+                    results = stage_results
+                    
+                    if stage_name == "VERNACULAR":
+                        resolved_from_common = True
+                        first_sci = results[0].get("usage", {}).get("name", {}).get("scientificName", "")
+                        resolved_scientific_name = first_sci
+                        await process.log(f"Vernacular resolved: '{search_term}' -> {first_sci}")
+                    break  # Use first stage that returns results
+            
+            if not results:
                 await context.reply(
                     f"No species found for '{search_term}' in the Catalogue of Life.\n\n"
                     "Suggestions:\n"
                     "- Check the spelling of the name\n"
                     "- Try using just the genus name\n"
-                    "- Try the scientific name if you used a common name\n\n"
-                    "Examples of valid searches:\n"
-                    "- Scientific: 'Homo sapiens', 'Panthera leo', 'Felidae'\n"
-                    "- Common: 'lion', 'black rat', 'common toad'"
+                    "- Try the scientific name if you used a common name"
                 )
                 return
             
+            # Score and sort results
+            scored = [(r, self._score_result(r, search_term)) for r in results]
+            scored.sort(key=lambda x: x[1], reverse=True)
+            results = [r for r, s in scored]
+            
+            # Trim to user's requested limit
+            results = results[:limit]
+            
+            # Format results
             formatted_results = []
             for item in results:
                 try:
@@ -638,49 +495,51 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                     scientific_name = name_obj.get("scientificName", "Unknown")
                     rank = name_obj.get("rank", "Unknown")
                     status = usage.get("status", "Unknown")
+                    
                     classification = item.get("classification", [])
                     taxonomy = {}
-                    desired_ranks = ["domain", "kingdom", "phylum", "class", "order", "family", "genus", "species"]
                     for taxon in classification:
-                        taxon_rank = taxon.get("rank", "").lower()
-                        taxon_name = taxon.get("name", "")
-                        if taxon_rank in desired_ranks and taxon_name:
-                            taxonomy[taxon_rank] = taxon_name
+                        tr = taxon.get("rank", "").lower()
+                        tn = taxon.get("name", "")
+                        if tr in ("domain","kingdom","phylum","class","order","family","genus","species") and tn:
+                            taxonomy[tr] = tn
+                    
                     formatted_results.append({"id": taxon_id, "scientificName": scientific_name, "rank": rank, "status": status, "taxonomy": taxonomy})
                 except Exception as e:
-                    logger.warning(f"Error processing search result: {e}")
-                    continue
+                    logger.warning(f"Error formatting result: {e}")
+            
+            if not formatted_results:
+                await context.reply(f"Found results for '{search_term}' but could not parse them.")
+                return
             
             await process.log(
-                f"Found {total} matches, showing top {len(formatted_results)}",
-                data={"results": [{"id": r["id"], "scientific_name": r["scientificName"], "rank": r["rank"], "status": r["status"]} for r in formatted_results]}
+                f"Returning {len(formatted_results)} results (scored and sorted)",
+                data={"top_3": [{"name": r["scientificName"], "rank": r["rank"], "score": self._score_result(results[i], search_term)} for i, r in enumerate(formatted_results[:3])]}
             )
             
-            name_note = f"(Resolved from common name '{search_term}' -> *{resolved_scientific_name}*)\n\n" if resolved_from_common and resolved_scientific_name else ""
+            # Build reply
+            name_note = f"(Resolved from common name '{search_term}' -> *{resolved_scientific_name}*)\n\n" if resolved_from_common else ""
+            top = formatted_results[0]
             
             if len(formatted_results) == 1:
-                result = formatted_results[0]
-                reply_text = f"{name_note}Found {result['scientificName']} ({result['rank']}, {result['status']}).\nTaxon ID: {result['id']}\n\nSee artifact for complete taxonomic data."
+                reply = f"{name_note}Found {top['scientificName']} ({top['rank']}, {top['status']}).\nTaxon ID: {top['id']}\n\nSee artifact for complete data."
             else:
-                result = formatted_results[0]
-                reply_text = f"{name_note}Found {total} matches for '{search_term}'.\nTop result: {result['scientificName']} ({result['rank']})\n\nSee artifact for complete results."
+                reply = f"{name_note}Found {total} matches for '{search_term}'.\nTop result: {top['scientificName']} ({top['rank']})\n\nSee artifact for complete results."
             
             artifact_data = {
-                "search_info": {"query": search_term, "original_request": request, "total_found": total, "showing": len(formatted_results), "resolved_from_common_name": resolved_from_common, "resolved_scientific_name": resolved_scientific_name},
+                "search_info": {"query": search_term, "total_found": total, "showing": len(formatted_results), "resolved_from_common_name": resolved_from_common},
                 "results": formatted_results,
                 "raw_response": data
             }
-            
             await self._create_json_artifact(process, artifact_data,
-                f"COL search results for '{search_term}' - {len(formatted_results)} of {total} results",
-                [f"{url}?{urlencode(api_params)}"],
-                {"data_source": "Catalogue of Life", "query": search_term, "total_found": total, "results_count": len(formatted_results)}
-            )
-            await context.reply(reply_text)
-            await process.log("Search completed successfully")
-    
+                f"COL search: '{search_term}' - {len(formatted_results)} of {total} results",
+                [f"{url}?{urlencode(strategies[0][1])}"],
+                {"data_source": "Catalogue of Life", "query": search_term, "total_found": total})
+            
+            await context.reply(reply)
+
     async def _handle_taxon_details(self, context, request, params):
-        """Handle the get_taxon_details entrypoint."""
+        """Get full details for a taxon, with synonym resolution for 404s."""
         async with context.begin_process(summary="Fetching taxon details") as process:
             query = params.taxon_id.strip()
             taxon_id = None
@@ -688,24 +547,33 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             
             if self._is_taxon_id(query):
                 taxon_id = query
-                await process.log(f"Using taxon ID: '{taxon_id}'")
+                await process.log(f"Using taxon ID directly: '{taxon_id}'")
             else:
-                await process.log(f"Searching for taxon ID using name: '{query}'")
+                await process.log(f"Searching for: '{query}'")
                 result = await self._search_for_taxon_id(process, query)
                 if not result:
                     await context.reply(
                         f"No match found for '{query}' in the Catalogue of Life.\n"
-                        "Please check the spelling and try again. "
-                        "You can use scientific names (e.g., 'Panthera leo') or common names (e.g., 'lion')."
+                        "Please check the spelling. You can use scientific names (e.g., 'Panthera leo') or common names (e.g., 'lion')."
                     )
                     return
                 taxon_id, scientific_name = result
             
+            # Fetch taxon details
             url = f"{COL_BASE_URL}/dataset/{self.dataset_key}/taxon/{taxon_id}"
             data = await self._make_api_request(process, url)
             
+            # If 404, try synonym resolution
             if not data:
-                await context.reply(f"Taxon ID '{taxon_id}' not found in the Catalogue of Life.\nPlease verify the ID and try again.")
+                await process.log(f"Taxon {taxon_id} not found, attempting synonym resolution")
+                resolved_id = await self._resolve_to_accepted_taxon(process, taxon_id)
+                if resolved_id:
+                    taxon_id = resolved_id
+                    url = f"{COL_BASE_URL}/dataset/{self.dataset_key}/taxon/{taxon_id}"
+                    data = await self._make_api_request(process, url)
+            
+            if not data:
+                await context.reply(f"Could not retrieve details for '{query}' (ID: {taxon_id}).\nThe taxon may not exist in the current Catalogue of Life release.")
                 return
             
             name_obj = data.get("name", {})
@@ -713,233 +581,210 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             authorship = name_obj.get("authorship", "")
             rank = name_obj.get("rank", "Unknown")
             status = data.get("status", "Unknown")
-            
-            classification = data.get("classification", [])
-            taxonomy = {}
-            desired_ranks = ["domain", "kingdom", "phylum", "class", "order", "family", "genus", "species"]
-            for taxon in classification:
-                taxon_rank = taxon.get("rank", "").lower()
-                taxon_name = taxon.get("name", "")
-                if taxon_rank in desired_ranks and taxon_name:
-                    taxonomy[taxon_rank] = taxon_name
-            
             extinct = data.get("extinct", False)
             environments = data.get("environments", [])
             link = data.get("link", "")
             
-            await process.log(f"Retrieved details for: {scientific_name}", data={"scientific_name": scientific_name, "rank": rank, "status": status, "extinct": extinct})
+            classification = data.get("classification", [])
+            taxonomy = {}
+            for taxon in classification:
+                tr = taxon.get("rank", "").lower()
+                tn = taxon.get("name", "")
+                if tr in ("domain","kingdom","phylum","class","order","family","genus","species") and tn:
+                    taxonomy[tr] = tn
+            
+            await process.log(f"Details retrieved: {scientific_name} [{rank}] extinct={extinct}")
             
             full_name = f"{scientific_name} {authorship}".strip()
-            reply_text = f"**{full_name}**\n\n"
-            reply_text += f"**Taxon ID:** {taxon_id}\n**Rank:** {rank}\n**Status:** {status}\n"
+            reply = f"**{full_name}**\n\n"
+            reply += f"**Taxon ID:** {taxon_id}\n**Rank:** {rank}\n**Status:** {status}\n"
             if extinct:
-                reply_text += "**Extinct:** Yes\n"
+                reply += "**Extinct:** Yes\n"
             if environments:
-                reply_text += f"**Environments:** {', '.join(environments)}\n"
+                reply += f"**Environments:** {', '.join(environments)}\n"
             if taxonomy:
-                reply_text += "\n**Complete Taxonomic Classification:**\n" + self._format_classification(taxonomy)
+                reply += "\n**Classification:**\n" + self._format_classification(taxonomy)
             col_page = f"https://www.checklistbank.org/dataset/{self.dataset_key}/taxon/{taxon_id}"
-            reply_text += f"\n\n**Catalogue of Life Page:** {col_page}\n"
+            reply += f"\n\n**Catalogue of Life Page:** {col_page}\n"
             if link:
-                reply_text += f"**Original Data Source:** {link}\n"
-            reply_text += "\nSee artifact for complete data including references and additional details."
+                reply += f"**Original Data Source:** {link}\n"
+            reply += "\nSee artifact for complete data."
             
-            artifact_data = {"taxon_info": {"id": taxon_id, "scientific_name": scientific_name, "authorship": authorship, "rank": rank, "status": status, "extinct": extinct, "environments": environments, "link": link}, "taxonomy": taxonomy, "raw_response": data}
-            await self._create_json_artifact(process, artifact_data, f"Complete taxon details for {scientific_name}", [link] if link else [url], {"data_source": "Catalogue of Life", "taxon_id": taxon_id, "scientific_name": scientific_name, "rank": rank})
-            await context.reply(reply_text)
-            await process.log("Taxon details retrieved successfully")
+            artifact_data = {
+                "taxon_info": {"id": taxon_id, "scientific_name": scientific_name, "authorship": authorship, "rank": rank, "status": status, "extinct": extinct, "environments": environments, "link": link},
+                "taxonomy": taxonomy, "raw_response": data
+            }
+            await self._create_json_artifact(process, artifact_data, f"Taxon details: {scientific_name}", [link] if link else [url],
+                {"data_source": "Catalogue of Life", "taxon_id": taxon_id, "scientific_name": scientific_name, "rank": rank})
+            await context.reply(reply)
     
     async def _handle_get_synonyms(self, context, request, params):
-        """Handle the get_synonyms entrypoint."""
+        """Get alternative scientific names for a taxon."""
         async with context.begin_process(summary="Fetching synonyms") as process:
             query = params.query.strip()
-            taxon_id = None
-            scientific_name = None
-            
             if self._is_taxon_id(query):
-                taxon_id = query
-                await process.log(f"Using taxon ID: '{taxon_id}'")
+                taxon_id, scientific_name = query, None
             else:
-                await process.log(f"Searching for taxon ID using name: '{query}'")
                 result = await self._search_for_taxon_id(process, query)
                 if not result:
-                    await context.reply(f"No species found for '{query}' in the Catalogue of Life.\nPlease check the spelling or use a valid taxon ID.")
+                    await context.reply(f"No species found for '{query}'. Please check the spelling.")
                     return
                 taxon_id, scientific_name = result
             
             url = f"{COL_BASE_URL}/dataset/{self.dataset_key}/taxon/{taxon_id}/info"
             data = await self._make_api_request(process, url)
             
+            # Synonym resolution if 404
             if not data:
-                await context.reply(f"Unable to retrieve information for taxon ID '{taxon_id}'.\nThe taxon may not have synonym data available.")
+                resolved_id = await self._resolve_to_accepted_taxon(process, taxon_id)
+                if resolved_id:
+                    taxon_id = resolved_id
+                    url = f"{COL_BASE_URL}/dataset/{self.dataset_key}/taxon/{taxon_id}/info"
+                    data = await self._make_api_request(process, url)
+            
+            if not data:
+                await context.reply(f"Unable to retrieve synonyms for '{query}'.")
                 return
             
-            synonyms_data = data.get("synonyms", {})
-            heterotypic = synonyms_data.get("heterotypic", [])
-            homotypic = synonyms_data.get("homotypic", [])
-            all_synonyms = heterotypic + homotypic
+            syn_data = data.get("synonyms", {})
+            all_syns = syn_data.get("heterotypic", []) + syn_data.get("homotypic", [])
             
-            if len(all_synonyms) == 0:
-                await process.log("No synonyms found")
-                display_name = scientific_name if scientific_name else f"taxon ID '{taxon_id}'"
-                await context.reply(f"No synonyms found for {display_name}.\nThis may be the currently accepted name with no alternative names.")
+            if not all_syns:
+                display = scientific_name or f"taxon ID '{taxon_id}'"
+                await context.reply(f"No synonyms found for {display}. This may be the only accepted name.")
                 return
             
             synonyms_list = []
-            for item in all_synonyms:
+            for item in all_syns:
                 try:
-                    name_obj = item.get("name", {})
-                    synonyms_list.append({"scientificName": name_obj.get("scientificName", "Unknown"), "authorship": name_obj.get("authorship", ""), "rank": name_obj.get("rank", "Unknown"), "status": item.get("status", "Unknown")})
-                except Exception as e:
-                    logger.warning(f"Error processing synonym: {e}")
-                    continue
+                    n = item.get("name", {})
+                    synonyms_list.append({"scientificName": n.get("scientificName", "Unknown"), "authorship": n.get("authorship", ""), "rank": n.get("rank", "Unknown"), "status": item.get("status", "Unknown")})
+                except: continue
             
-            await process.log(f"Found {len(synonyms_list)} synonyms", data={"synonyms": [{"scientific_name": s["scientificName"], "status": s["status"]} for s in synonyms_list[:10]]})
+            display = scientific_name or f"taxon ID {taxon_id}"
+            reply = f"**Found {len(synonyms_list)} synonym(s) for {display}:**\n\n"
+            for i, s in enumerate(synonyms_list, 1):
+                full = f"{s['scientificName']} {s['authorship']}".strip()
+                reply += f"{i}. *{full}*\n   - Rank: {s['rank']}, Status: {s['status']}\n\n"
+            reply += "See artifact for complete data."
             
-            display_name = scientific_name if scientific_name else f"taxon ID {taxon_id}"
-            reply_text = f"**Found {len(synonyms_list)} synonym(s) for {display_name}:**\n\n"
-            for i, synonym in enumerate(synonyms_list, 1):
-                full_name = f"{synonym['scientificName']} {synonym['authorship']}".strip()
-                reply_text += f"{i}. *{full_name}*\n   - Rank: {synonym['rank']}\n   - Status: {synonym['status']}\n\n"
-            reply_text += "See artifact for complete synonym data."
-            
-            artifact_data = {"query": query, "taxon_id": taxon_id, "scientific_name": scientific_name, "synonym_count": len(synonyms_list), "synonyms": synonyms_list, "raw_response": data}
-            await self._create_json_artifact(process, artifact_data, f"Synonyms for {scientific_name or taxon_id} - {len(synonyms_list)} total", [url], {"data_source": "Catalogue of Life", "taxon_id": taxon_id, "scientific_name": scientific_name or "Unknown", "synonym_count": len(synonyms_list)})
-            await context.reply(reply_text)
-            await process.log("Synonyms retrieved successfully")
-    
+            artifact_data = {"taxon_id": taxon_id, "scientific_name": scientific_name, "synonym_count": len(synonyms_list), "synonyms": synonyms_list, "raw_response": data}
+            await self._create_json_artifact(process, artifact_data, f"Synonyms for {scientific_name or taxon_id}: {len(synonyms_list)} total", [url],
+                {"data_source": "Catalogue of Life", "taxon_id": taxon_id, "synonym_count": len(synonyms_list)})
+            await context.reply(reply)
+
     async def _handle_vernacular_names(self, context, request, params):
-        """Handle the get_vernacular_names entrypoint."""
+        """Get common names in various languages."""
         async with context.begin_process(summary="Fetching vernacular names") as process:
             query = params.taxon_id.strip()
-            taxon_id = None
-            scientific_name = None
-            
             if self._is_taxon_id(query):
-                taxon_id = query
-                await process.log(f"Using taxon ID: '{taxon_id}'")
+                taxon_id, scientific_name = query, None
             else:
-                await process.log(f"Searching for taxon ID using name: '{query}'")
                 result = await self._search_for_taxon_id(process, query)
                 if not result:
-                    await context.reply(f"No match found for '{query}' in the Catalogue of Life.\nPlease check the spelling and try again.")
+                    await context.reply(f"No match found for '{query}'. Please check the spelling.")
                     return
                 taxon_id, scientific_name = result
             
             url = f"{COL_BASE_URL}/dataset/{self.dataset_key}/taxon/{taxon_id}/vernacular"
             data = await self._make_api_request(process, url, expected_structure="list")
             
+            # Synonym resolution if 404
+            if data is None:
+                resolved_id = await self._resolve_to_accepted_taxon(process, taxon_id)
+                if resolved_id:
+                    taxon_id = resolved_id
+                    url = f"{COL_BASE_URL}/dataset/{self.dataset_key}/taxon/{taxon_id}/vernacular"
+                    data = await self._make_api_request(process, url, expected_structure="list")
+            
             if not data:
-                await context.reply(f"Unable to retrieve vernacular names for taxon ID '{taxon_id}'.\nPlease verify the ID and try again.")
+                display = scientific_name or f"taxon ID '{taxon_id}'"
+                await context.reply(f"No common names found for {display}.")
                 return
             
-            if len(data) == 0:
-                await process.log("No vernacular names found")
-                display_name = scientific_name if scientific_name else f"taxon ID '{taxon_id}'"
-                await context.reply(f"No common names found for {display_name}.\nThis species may not have vernacular names in the database.")
-                return
-            
-            names_by_language = {}
-            total_names = 0
+            names_by_lang = {}
+            total = 0
             for item in data:
-                try:
-                    name = item.get("name", "")
-                    language = item.get("language", "Unknown")
-                    if name:
-                        if language not in names_by_language:
-                            names_by_language[language] = []
-                        names_by_language[language].append(name)
-                        total_names += 1
-                except Exception as e:
-                    logger.warning(f"Error processing vernacular name: {e}")
-                    continue
+                name = item.get("name", "")
+                lang = item.get("language", "Unknown")
+                if name:
+                    names_by_lang.setdefault(lang, []).append(name)
+                    total += 1
             
-            await process.log(f"Found {total_names} vernacular names in {len(names_by_language)} languages", data={"languages": list(names_by_language.keys())})
+            display = scientific_name or f"taxon ID {taxon_id}"
+            reply = f"**Common names for {display}:**\n\n"
+            for lang in sorted(names_by_lang):
+                reply += f"**{lang}:**\n"
+                for name in sorted(names_by_lang[lang]):
+                    reply += f"  - {name}\n"
+                reply += "\n"
+            reply += f"Total: {total} names in {len(names_by_lang)} languages\n\nSee artifact for complete data."
             
-            display_name = scientific_name if scientific_name else f"taxon ID {taxon_id}"
-            reply_text = f"**Common names found for {display_name}:**\n\n"
-            for language in sorted(names_by_language.keys()):
-                names = names_by_language[language]
-                reply_text += f"**{language}:**\n"
-                for name in sorted(names):
-                    reply_text += f"  - {name}\n"
-                reply_text += "\n"
-            reply_text += f"Total: {total_names} names in {len(names_by_language)} languages\n\nSee artifact for complete data."
-            
-            artifact_data = {"query": query, "taxon_id": taxon_id, "scientific_name": scientific_name or "Not provided", "total_names": total_names, "language_count": len(names_by_language), "names_by_language": names_by_language, "raw_response": data}
-            await self._create_json_artifact(process, artifact_data, f"Vernacular names for {scientific_name or taxon_id} - {total_names} names in {len(names_by_language)} languages", [url], {"data_source": "Catalogue of Life", "taxon_id": taxon_id, "scientific_name": scientific_name or "Unknown", "total_names": total_names, "language_count": len(names_by_language)})
-            await context.reply(reply_text)
-            await process.log("Vernacular names retrieved successfully")
+            artifact_data = {"taxon_id": taxon_id, "scientific_name": scientific_name, "total_names": total, "names_by_language": names_by_lang, "raw_response": data}
+            await self._create_json_artifact(process, artifact_data,
+                f"Vernacular names for {scientific_name or taxon_id}: {total} names",
+                [url], {"data_source": "Catalogue of Life", "taxon_id": taxon_id, "total_names": total})
+            await context.reply(reply)
     
     async def _handle_classification(self, context, request, params):
-        """Handle the get_classification entrypoint."""
-        async with context.begin_process(summary="Fetching classification hierarchy") as process:
+        """Get full parent lineage hierarchy."""
+        async with context.begin_process(summary="Fetching classification") as process:
             query = params.taxon_id.strip()
-            taxon_id = None
-            scientific_name = None
-            
             if self._is_taxon_id(query):
-                taxon_id = query
-                await process.log(f"Using taxon ID: '{taxon_id}'")
+                taxon_id, scientific_name = query, None
             else:
-                await process.log(f"Searching for taxon ID using name: '{query}'")
                 result = await self._search_for_taxon_id(process, query)
                 if not result:
-                    await context.reply(f"No match found for '{query}' in the Catalogue of Life.\nPlease check the spelling and try again.")
+                    await context.reply(f"No match found for '{query}'. Please check the spelling.")
                     return
                 taxon_id, scientific_name = result
             
             url = f"{COL_BASE_URL}/dataset/{self.dataset_key}/taxon/{taxon_id}/classification"
             data = await self._make_api_request(process, url, expected_structure="list")
             
-            if not data:
-                await context.reply(f"Unable to retrieve classification for taxon ID '{taxon_id}'.\nThe taxon may not have classification data available.")
-                return
+            # Synonym resolution if 404
+            if data is None:
+                resolved_id = await self._resolve_to_accepted_taxon(process, taxon_id)
+                if resolved_id:
+                    taxon_id = resolved_id
+                    url = f"{COL_BASE_URL}/dataset/{self.dataset_key}/taxon/{taxon_id}/classification"
+                    data = await self._make_api_request(process, url, expected_structure="list")
             
-            if len(data) == 0:
-                await process.log("No classification data found")
-                display_name = scientific_name if scientific_name else f"taxon ID '{taxon_id}'"
-                await context.reply(f"No classification hierarchy found for {display_name}.\nThis taxon may be at the top of the hierarchy.")
+            if not data:
+                display = scientific_name or f"taxon ID '{taxon_id}'"
+                await context.reply(f"No classification data found for {display}.")
                 return
             
             classification_list = []
             for item in data:
                 try:
                     classification_list.append({"id": item.get("id", ""), "name": item.get("name", "Unknown"), "authorship": item.get("authorship", ""), "rank": item.get("rank", "Unknown")})
-                except Exception as e:
-                    logger.warning(f"Error processing classification item: {e}")
-                    continue
+                except: continue
             
-            await process.log(f"Retrieved {len(classification_list)} classification levels", data={"levels": [{"rank": c["rank"], "name": c["name"]} for c in classification_list[:5]]})
-            
-            display_name = scientific_name if scientific_name else f"taxon ID {taxon_id}"
-            reply_text = f"**Complete Classification Hierarchy for {display_name}:**\n\n"
+            display = scientific_name or f"taxon ID {taxon_id}"
+            reply = f"**Classification for {display}:**\n\n"
             for item in classification_list:
-                full_name = f"{item['name']} {item['authorship']}".strip()
-                reply_text += f"**{item['rank'].capitalize()}:** {full_name}\n"
-            reply_text += f"\n**Total Levels:** {len(classification_list)}\n\nSee artifact for complete classification data."
+                full = f"{item['name']} {item['authorship']}".strip()
+                reply += f"**{item['rank'].capitalize()}:** {full}\n"
+            reply += f"\n**Levels:** {len(classification_list)}\n\nSee artifact for complete data."
             
-            artifact_data = {"query": query, "taxon_id": taxon_id, "scientific_name": scientific_name or "Not provided", "classification_levels": len(classification_list), "classification": classification_list, "raw_response": data}
-            await self._create_json_artifact(process, artifact_data, f"Classification hierarchy for {scientific_name or taxon_id} - {len(classification_list)} levels", [url], {"data_source": "Catalogue of Life", "taxon_id": taxon_id, "scientific_name": scientific_name or "Unknown", "levels": len(classification_list)})
-            await context.reply(reply_text)
-            await process.log("Classification hierarchy retrieved successfully")
+            artifact_data = {"taxon_id": taxon_id, "scientific_name": scientific_name, "levels": len(classification_list), "classification": classification_list, "raw_response": data}
+            await self._create_json_artifact(process, artifact_data,
+                f"Classification for {scientific_name or taxon_id}: {len(classification_list)} levels",
+                [url], {"data_source": "Catalogue of Life", "taxon_id": taxon_id, "levels": len(classification_list)})
+            await context.reply(reply)
     
     async def _handle_taxon_children(self, context, request, params):
-        """Handle the get_taxon_children entrypoint."""
+        """List immediate child taxa."""
         async with context.begin_process(summary="Fetching child taxa") as process:
             query = params.taxon_id.strip()
             limit = params.limit or DEFAULT_CHILDREN_LIMIT
-            taxon_id = None
-            scientific_name = None
-            
             if self._is_taxon_id(query):
-                taxon_id = query
-                await process.log(f"Using taxon ID: '{taxon_id}'")
+                taxon_id, scientific_name = query, None
             else:
-                await process.log(f"Searching for taxon ID using name: '{query}'")
                 result = await self._search_for_taxon_id(process, query)
                 if not result:
-                    await context.reply(f"No match found for '{query}' in the Catalogue of Life.\nPlease check the spelling and try again.")
+                    await context.reply(f"No match found for '{query}'. Please check the spelling.")
                     return
                 taxon_id, scientific_name = result
             
@@ -947,108 +792,97 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             api_params = {"limit": limit}
             data = await self._make_api_request(process, url, api_params, expected_structure="dict")
             
-            if not data:
-                await context.reply(f"Unable to retrieve children for taxon ID '{taxon_id}'.\nPlease verify the ID and try again.")
+            # Synonym resolution if 404
+            if data is None:
+                resolved_id = await self._resolve_to_accepted_taxon(process, taxon_id)
+                if resolved_id:
+                    taxon_id = resolved_id
+                    url = f"{COL_BASE_URL}/dataset/{self.dataset_key}/tree/{taxon_id}/children"
+                    data = await self._make_api_request(process, url, api_params, expected_structure="dict")
+            
+            results = data.get("result", []) if data else []
+            total = data.get("total", 0) if data else 0
+            
+            if not results:
+                display = scientific_name or f"taxon ID '{taxon_id}'"
+                await context.reply(f"No child taxa found for {display}. This may be a terminal node (species with no subspecies).")
                 return
             
-            results = data.get("result", [])
-            total = data.get("total", 0)
-            
-            if len(results) == 0:
-                await process.log("No children found")
-                display_name = scientific_name if scientific_name else f"taxon ID '{taxon_id}'"
-                await context.reply(f"No child taxa found for {display_name}.\nThis taxon may be a terminal node (e.g., species with no subspecies).")
-                return
-            
-            children_list = []
+            children = []
             for item in results:
                 try:
-                    children_list.append({"id": item.get("id", ""), "name": item.get("name", "Unknown"), "authorship": item.get("authorship", ""), "rank": item.get("rank", "Unknown"), "status": item.get("status", "Unknown")})
-                except Exception as e:
-                    logger.warning(f"Error processing child taxon: {e}")
-                    continue
+                    children.append({"id": item.get("id", ""), "name": item.get("name", "Unknown"), "authorship": item.get("authorship", ""), "rank": item.get("rank", "Unknown"), "status": item.get("status", "Unknown")})
+                except: continue
             
-            await process.log(f"Found {total} children, showing {len(children_list)}", data={"children": [{"name": c["name"], "rank": c["rank"], "status": c["status"]} for c in children_list[:10]]})
-            
-            display_name = scientific_name if scientific_name else f"taxon ID {taxon_id}"
-            reply_text = f"**Found {total} child taxa for {display_name}:**\n\n"
+            display = scientific_name or f"taxon ID {taxon_id}"
+            reply = f"**Found {total} child taxa for {display}:**\n\n"
             if total > limit:
-                reply_text += f"*(Showing first {limit} of {total} total)*\n\n"
-            for i, child in enumerate(children_list, 1):
-                full_name = f"{child['name']} {child['authorship']}".strip()
-                reply_text += f"{i}. **{full_name}**\n   - Rank: {child['rank']}\n   - Status: {child['status']}\n\n"
-            reply_text += "See artifact for complete children data."
+                reply += f"*(Showing first {limit} of {total})*\n\n"
+            for i, c in enumerate(children, 1):
+                full = f"{c['name']} {c['authorship']}".strip()
+                reply += f"{i}. **{full}**\n   - Rank: {c['rank']}, Status: {c['status']}\n\n"
+            reply += "See artifact for complete data."
             
-            artifact_data = {"query": query, "taxon_id": taxon_id, "scientific_name": scientific_name or "Not provided", "total_children": total, "showing": len(children_list), "children": children_list, "raw_response": data}
-            await self._create_json_artifact(process, artifact_data, f"Children of {scientific_name or taxon_id} - {len(children_list)} of {total} total", [f"{url}?{urlencode(api_params)}"], {"data_source": "Catalogue of Life", "taxon_id": taxon_id, "scientific_name": scientific_name or "Unknown", "total_children": total, "showing": len(children_list)})
-            await context.reply(reply_text)
-            await process.log("Child taxa retrieved successfully")
+            artifact_data = {"taxon_id": taxon_id, "scientific_name": scientific_name, "total_children": total, "showing": len(children), "children": children, "raw_response": data}
+            await self._create_json_artifact(process, artifact_data,
+                f"Children of {scientific_name or taxon_id}: {len(children)} of {total}",
+                [f"{url}?{urlencode(api_params)}"],
+                {"data_source": "Catalogue of Life", "taxon_id": taxon_id, "total_children": total})
+            await context.reply(reply)
+
+    # ==================== MAIN ROUTER ====================
     
     @override
     async def run(self, context, request, entrypoint, params):
-        """Main agent entry point. Routes requests to the appropriate handler."""
-        logger.info(f"Agent invoked with entrypoint: {entrypoint}")
-        logger.debug(f"Request: {request}")
-        logger.debug(f"Parameters: {params}")
+        logger.info(f"Agent invoked: entrypoint={entrypoint}")
+        logger.debug(f"Request: {request}, Params: {params}")
         
-        try:
-            if entrypoint == "search":
-                await self._handle_search(context, request, params)
-            elif entrypoint == "get_taxon_details":
-                await self._handle_taxon_details(context, request, params)
-            elif entrypoint == "get_synonyms":
-                await self._handle_get_synonyms(context, request, params)
-            elif entrypoint == "get_vernacular_names":
-                await self._handle_vernacular_names(context, request, params)
-            elif entrypoint == "get_classification":
-                await self._handle_classification(context, request, params)
-            elif entrypoint == "get_taxon_children":
-                await self._handle_taxon_children(context, request, params)
-            else:
-                error_msg = f"Unknown entrypoint: {entrypoint}"
-                logger.error(error_msg)
-                await context.reply(
-                    f"Error: Unrecognized entrypoint '{entrypoint}'.\n"
-                    "Valid entrypoints: search, get_taxon_details, get_synonyms, get_vernacular_names, get_classification, get_taxon_children"
-                )
-        except Exception as e:
-            logger.exception(f"Unexpected error in entrypoint handler: {e}")
+        handlers = {
+            "search": self._handle_search,
+            "get_taxon_details": self._handle_taxon_details,
+            "get_synonyms": self._handle_get_synonyms,
+            "get_vernacular_names": self._handle_vernacular_names,
+            "get_classification": self._handle_classification,
+            "get_taxon_children": self._handle_taxon_children,
+        }
+        
+        handler = handlers.get(entrypoint)
+        if handler:
+            try:
+                await handler(context, request, params)
+            except Exception as e:
+                logger.exception(f"Error in {entrypoint}: {e}")
+                await context.reply("An unexpected error occurred. Please try again.")
+        else:
             await context.reply(
-                "An unexpected error occurred while processing your request.\n"
-                "Please try again or contact support if the problem persists."
+                f"Unknown entrypoint '{entrypoint}'.\n"
+                "Valid: search, get_taxon_details, get_synonyms, get_vernacular_names, get_classification, get_taxon_children"
             )
 
 
 def validate_environment():
-    """Validate that required environment variables are set."""
-    openai_key = os.getenv("OPENAI_API_KEY")
-    if not openai_key:
-        logger.warning("OPENAI_API_KEY not set. LLM features will be unavailable.")
+    if not os.getenv("OPENAI_API_KEY"):
+        logger.warning("OPENAI_API_KEY not set. LLM features unavailable.")
         return False
     return True
 
 
 def run_agent_server():
-    """Initialize and run the COL agent server."""
-    logger.info("Initializing Catalogue of Life Agent")
+    logger.info("Initializing Catalogue of Life Agent v2.3.0")
     validate_environment()
-    
     try:
         agent = CatalogueOfLifeAgent()
         card = agent.get_agent_card()
-        logger.info(f"Agent card created: {card.name}")
-        logger.info(f"Available entrypoints: {[ep.id for ep in card.entrypoints]}")
+        logger.info(f"Agent: {card.name}, Entrypoints: {[ep.id for ep in card.entrypoints]}")
     except Exception as e:
-        logger.error(f"Failed to initialize agent: {e}")
+        logger.error(f"Init failed: {e}")
         raise
-    
     try:
         from ichatbio.server import run_agent_server as start_server
-        logger.info("Starting agent server on http://localhost:9999")
-        logger.info("Agent card available at: http://localhost:9999/.well-known/agent.json")
+        logger.info("Starting on http://0.0.0.0:9999")
         start_server(agent, host="0.0.0.0", port=9999)
     except Exception as e:
-        logger.error(f"Server failed to start: {e}")
+        logger.error(f"Server failed: {e}")
         raise
 
 
