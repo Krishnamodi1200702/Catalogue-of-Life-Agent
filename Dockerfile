@@ -26,4 +26,4 @@ RUN uv pip install --no-cache --python $VIRTUAL_ENV/bin/python -e .
 
 EXPOSE 9999
 
-CMD ["python3", "-m", "src.main"]
+CMD ["uvicorn", "main:create_app", "--factory", "--host", "0.0.0.0", "--port", "9999"]
