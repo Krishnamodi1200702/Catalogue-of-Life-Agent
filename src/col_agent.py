@@ -342,7 +342,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 mimetype="application/json",
                 description=description,
                 content=None,
-                uris=[api_url],
+                uris=uris,
                 metadata=metadata
             )
             logger.info(f"Created artifact: {description}")
