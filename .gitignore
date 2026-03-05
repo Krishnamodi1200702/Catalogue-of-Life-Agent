@@ -24,4 +24,4 @@ Thumbs.db
 *.db
 *.sqlite3
 
-build
+build.env
