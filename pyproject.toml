@@ -18,4 +18,5 @@ dependencies = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["src", "tests"]
+asyncio_mode = "auto"
+pythonpath = ["src"]

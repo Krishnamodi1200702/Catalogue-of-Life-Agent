@@ -341,8 +341,8 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             await process.create_artifact(
                 mimetype="application/json",
                 description=description,
-                content=json.dumps(data, indent=2).encode('utf-8'),
-                uris=uris,
+                content=None,
+                uris=[api_url],
                 metadata=metadata
             )
             logger.info(f"Created artifact: {description}")
@@ -657,7 +657,6 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             
             if taxonomy:
                 reply_text += "\n**Complete Taxonomic Classification:**\n"
-                reply_text += self._format_classification(taxonomy)
             
             col_page = f"https://www.checklistbank.org/dataset/{self.dataset_key}/taxon/{taxon_id}"
             reply_text += f"\n\n**Catalogue of Life Page:** {col_page}\n"
