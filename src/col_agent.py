@@ -239,7 +239,6 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             await process.create_artifact(
                 mimetype="application/json",
                 description=description,
-                content=json.dumps(data, indent=2).encode('utf-8'),
                 uris=uris,
                 metadata=metadata
             )
@@ -477,11 +476,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 except: continue
 
             display = scientific_name or f"taxon ID {taxon_id}"
-            reply = f"**Found {len(synonyms_list)} synonym(s) for {display}:**\n\n"
-            for i, s in enumerate(synonyms_list, 1):
-                full = f"{s['scientificName']} {s['authorship']}".strip()
-                reply += f"{i}. *{full}*\n   - Rank: {s['rank']}, Status: {s['status']}\n\n"
-            reply += "See artifact for complete synonym data."
+            reply = f"Found {len(synonyms_list)} synonym(s) for {display}. See artifact for complete synonym data."
 
             artifact_data = {"taxon_id": taxon_id, "scientific_name": scientific_name,
                 "synonym_count": len(synonyms_list), "synonyms": synonyms_list, "raw_response": data}
@@ -523,13 +518,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                     total += 1
 
             display = scientific_name or f"taxon ID {taxon_id}"
-            reply = f"**Common names for {display}:**\n\n"
-            for lang in sorted(names_by_lang):
-                reply += f"**{lang}:**\n"
-                for name in sorted(names_by_lang[lang]):
-                    reply += f"  - {name}\n"
-                reply += "\n"
-            reply += f"Total: {total} names in {len(names_by_lang)} languages\n\nSee artifact for complete data."
+            reply = f"Found {total} common name(s) for {display} in {len(names_by_lang)} language(s). See artifact for complete data."
 
             artifact_data = {"taxon_id": taxon_id, "scientific_name": scientific_name,
                 "total_names": total, "names_by_language": names_by_lang, "raw_response": data}
@@ -571,11 +560,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 except: continue
 
             display = scientific_name or f"taxon ID {taxon_id}"
-            reply = f"**Classification for {display}:**\n\n"
-            for item in classification_list:
-                full = f"{item['name']} {item['authorship']}".strip()
-                reply += f"**{item['rank'].capitalize()}:** {full}\n"
-            reply += f"\n**Total Levels:** {len(classification_list)}\n\nSee artifact for complete data."
+            reply = f"Retrieved classification hierarchy for {display} ({len(classification_list)} levels). See artifact for complete data."
 
             artifact_data = {"taxon_id": taxon_id, "scientific_name": scientific_name,
                 "levels": len(classification_list), "classification": classification_list, "raw_response": data}
@@ -627,13 +612,10 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 except: continue
 
             display = scientific_name or f"taxon ID {taxon_id}"
-            reply = f"**Found {total} child taxa for {display}:**\n\n"
+            reply = f"Found {total} child taxa for {display}."
             if total > limit:
-                reply += f"*(Showing first {limit} of {total})*\n\n"
-            for i, c in enumerate(children_list, 1):
-                full = f"{c['name']} {c['authorship']}".strip()
-                reply += f"{i}. **{full}**\n   - Rank: {c['rank']}, Status: {c['status']}\n\n"
-            reply += "See artifact for complete data."
+                reply += f" Showing first {limit} in the API request."
+            reply += " See artifact for complete data."
 
             artifact_data = {"taxon_id": taxon_id, "scientific_name": scientific_name,
                 "total_children": total, "showing": len(children_list), "children": children_list, "raw_response": data}
