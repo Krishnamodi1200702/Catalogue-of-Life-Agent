@@ -18,8 +18,11 @@ import argparse
 import asyncio
 import json
 import sys
+import os
 
-from col_agent import (
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.col_agent import (
     CatalogueOfLifeAgent,
     SearchParameters,
     TaxonDetailsParameters,
@@ -27,6 +30,8 @@ from col_agent import (
     GetVernacularNamesParameters,
     GetClassificationParameters,
     GetTaxonChildrenParameters,
+    GetDistributionParameters,
+    GetReferencesParameters,
 )
 from ichatbio.agent_response import (
     ResponseContext,
@@ -518,6 +523,8 @@ async def run_custom(agent, entrypoint, query, limit=None):
         "get_vernacular_names": lambda: GetVernacularNamesParameters(taxon_id=query),
         "get_classification": lambda: GetClassificationParameters(taxon_id=query),
         "get_taxon_children": lambda: GetTaxonChildrenParameters(taxon_id=query, limit=limit or 20),
+        "get_distribution": lambda: GetDistributionParameters(taxon_id=query),
+        "get_references": lambda: GetReferencesParameters(taxon_id=query),
     }
     if entrypoint not in param_map:
         print(f"Unknown entrypoint: '{entrypoint}'")

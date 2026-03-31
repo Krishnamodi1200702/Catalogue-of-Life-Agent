@@ -97,7 +97,18 @@ class GetTaxonChildrenParameters(BaseModel):
         examples=["6DBT", "Panthera", "Felidae", "Carnivora"]
     )
     limit: Optional[int] = Field(default=DEFAULT_CHILDREN_LIMIT, description="Maximum children to return", ge=1, le=100)
-
+    
+class GetDistributionParameters(BaseModel):
+    taxon_id: str = Field(
+        description="Taxon ID or scientific name. Example: '4RM6W' or 'Rattus rattus'.",
+        examples=["4RM6W", "Rattus rattus", "Panthera leo"]
+    )
+    
+class GetReferencesParameters(BaseModel):
+    taxon_id: str = Field(
+        description="Taxon ID or scientific name. Example: '4RM6W' or 'Rattus rattus'.",
+        examples=["4RM6W", "Rattus rattus", "Panthera leo"]
+    )
 
 # --- Agent ---
 
@@ -148,6 +159,26 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                         "Use when user needs: extinction data, habitat, environments, complete overview."
                     ),
                     parameters=TaxonDetailsParameters
+                ),
+                AgentEntrypoint(
+                    id="get_distribution",
+                    description=(
+                        "Get geographic distribution information for a taxon. "
+                        "Returns regions and areas where the species is found. "
+                        "Use for: geographic range, habitat locations, distribution data, "
+                        "biogeography questions like 'where is X found' or 'what regions does X live in'."
+                        ),
+                        parameters=GetDistributionParameters
+                ),
+                AgentEntrypoint(
+                    id="get_references",
+                    description=(
+                        "Get bibliographic references and citations for a taxon. "
+                        "Returns scientific publications, books, and sources that document this species. "
+                        "Use for: citations, sources, bibliography, literature, "
+                        "or when user asks 'what are the references for X' or 'sources for X'."
+                    ),
+                    parameters=GetReferencesParameters
                 ),
                 AgentEntrypoint(
                     id="get_synonyms",
@@ -207,6 +238,152 @@ class CatalogueOfLifeAgent(IChatBioAgent):
         if query.isupper() and len(query) <= 10:
             return True
         return False
+    
+    def _normalize_name(self, name: str) -> str:
+        """Normalize scientific name for comparison."""
+        return " ".join(name.strip().lower().split())
+
+    def _extract_result_fields(self, item: dict) -> dict:
+        """Extract relevant fields from API result item."""
+        usage = item.get("usage", {})
+        name_obj = usage.get("name", {})
+
+        scientific_name = name_obj.get("scientificName", "")
+        rank = name_obj.get("rank", "")
+        status = usage.get("status", "")
+
+        return {
+            "id": item.get("id"),
+            "scientific_name": scientific_name,
+            "rank": rank.lower().strip(),
+            "status": status.lower().strip(),
+            "item": item,
+        }
+    
+    def _is_exact_binomial_match(self, result: dict, query: str) -> bool:
+    
+    # Parse query first
+       query_parts = query.strip().lower().split()
+       name_parts = result["scientific_name"].strip().lower().split()
+    
+    # Only applies to binomial queries (two words)
+       if len(query_parts) != 2:
+          return False
+    
+    # Result must also be binomial and at species rank
+       if len(name_parts) < 2 or result["rank"] != "species":
+           return False
+    
+    # Check genus and species epithet match
+       query_genus = query_parts[0]
+       query_species = query_parts[1]
+       result_genus = name_parts[0]
+       result_species = name_parts[1]
+    
+       return query_genus == result_genus and query_species == result_species
+   
+    def _choose_best_match(self, results: list, query: str):
+
+        query_norm = self._normalize_name(query)
+        parsed = [self._extract_result_fields(r) for r in results]
+        
+        if not parsed:
+            return None
+        
+        # Detect if query is binomial (two words)
+        query_parts = query.strip().split()
+        is_binomial = len(query_parts) == 2
+        
+        if is_binomial:
+            query_genus = query_parts[0].lower()
+            query_species = query_parts[1].lower()
+            
+            # PRIORITY 1: Exact genus + species + ACCEPTED status
+            for r in parsed:
+                sci_name = r["scientific_name"]
+                name_parts = sci_name.split()
+                
+                if len(name_parts) >= 2:
+                    result_genus = name_parts[0].lower()
+                    result_species = name_parts[1].lower()
+                    
+                    if (result_genus == query_genus and 
+                        result_species == query_species and 
+                        r["rank"] == "species" and 
+                        r["status"] == "accepted"):  # ← MUST be accepted!
+                        return r
+            
+            # PRIORITY 2: Exact genus + species (synonym is okay if no accepted found)
+            # But only if it has a valid accepted parent
+            for r in parsed:
+                sci_name = r["scientific_name"]
+                name_parts = sci_name.split()
+                
+                if len(name_parts) >= 2:
+                    result_genus = name_parts[0].lower()
+                    result_species = name_parts[1].lower()
+                    
+                    if (result_genus == query_genus and 
+                        result_species == query_species and 
+                        r["rank"] == "species" and
+                        r["status"] == "synonym"):
+                        # For synonyms, try to get the accepted name from the result
+                        item = r.get("item", {})
+                        usage = item.get("usage", {})
+                        accepted = usage.get("accepted")
+                        
+                        if accepted:
+                            # Create a new result dict for the accepted name
+                            accepted_name_obj = accepted.get("name", {})
+                            return {
+                                "id": accepted.get("id"),
+                                "scientific_name": accepted_name_obj.get("scientificName", sci_name),
+                                "rank": accepted_name_obj.get("rank", "species"),
+                                "status": "accepted",
+                                "item": item
+                            }
+                        # If no accepted info, use the synonym anyway
+                        return r
+        
+        # Fallback to original matching rules for non-binomial or if no exact match
+        
+        # Rule 1: exact scientific name + species + accepted
+        for r in parsed:
+            if (
+                self._normalize_name(r["scientific_name"]) == query_norm
+                and r["rank"] == "species"
+                and r["status"] == "accepted"
+            ):
+                return r
+
+        # Rule 2: exact scientific name + species
+        for r in parsed:
+            if (
+                self._normalize_name(r["scientific_name"]) == query_norm
+                and r["rank"] == "species"
+            ):
+                return r
+
+        # Rule 3: exact scientific name + accepted
+        for r in parsed:
+            if (
+                self._normalize_name(r["scientific_name"]) == query_norm
+                and r["status"] == "accepted"
+            ):
+                return r
+
+        # Rule 4: exact scientific name
+        for r in parsed:
+            if self._normalize_name(r["scientific_name"]) == query_norm:
+                return r
+
+        # Rule 5: accepted species (any name)
+        for r in parsed:
+            if r["rank"] == "species" and r["status"] == "accepted":
+                return r
+
+        # Rule 6: fallback to first result
+        return parsed[0]
 
     async def _make_api_request(self, process, url, params=None, expected_structure="dict"):
         full_url = f"{url}?{urlencode(params)}" if params else url
@@ -249,37 +426,64 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             return False
 
     async def _search_for_taxon_id(self, process, scientific_name):
-        """Simple search: content=SCIENTIFIC_NAME, limit=5, return first result."""
+        """
+        Search with PREFIX type and follow synonyms to accepted names.
+        """
         url = f"{COL_BASE_URL}/dataset/{self.dataset_key}/nameusage/search"
+        
+        query_parts = scientific_name.strip().split()
+        is_binomial = len(query_parts) == 2
+        
         params = {
             "q": scientific_name,
             "content": "SCIENTIFIC_NAME",
-            "limit": 5,
+            "limit": 50
         }
-
+        
+        # Use PREFIX for binomial queries
+        if is_binomial:
+            params["type"] = "PREFIX"
+            await process.log(f"Using PREFIX matching for binomial: '{scientific_name}'")
+        
         data = await self._make_api_request(process, url, params, expected_structure="dict")
-
-        if not data:
+        
+        if not data or not data.get("result"):
             return None
-
+        
         results = data.get("result", [])
-
-        if len(results) == 0:
-            await process.log(f"No results found for '{scientific_name}'")
+        total = data.get("total", 0)
+        
+        await process.log(f"Found {total} matches with PREFIX type")
+        
+        # Find best match
+        best_result = self._choose_best_match(results, scientific_name)
+        
+        if not best_result:
             return None
-
-        await process.log(
-            f"Got {len(results)} results for '{scientific_name}'",
-            data={"first_3": [r.get("usage", {}).get("name", {}).get("scientificName", "?") for r in results[:3]]}
-        )
-
-        first_result = results[0]
-        taxon_id = first_result.get("id")
-        usage = first_result.get("usage", {})
-        name_obj = usage.get("name", {})
-        found_name = name_obj.get("scientificName", "")
-
-        await process.log(f"Using first result: {found_name} (ID: {taxon_id})")
+        
+        taxon_id = best_result["id"]
+        found_name = best_result["scientific_name"]
+        status = best_result["status"]
+        
+        # If it's a synonym, get the accepted name
+        if status == "synonym":
+            item = best_result.get("item", {})
+            usage = item.get("usage", {})
+            accepted = usage.get("accepted")
+            
+            if accepted:
+                accepted_id = accepted.get("id")
+                accepted_name_obj = accepted.get("name", {})
+                accepted_name = accepted_name_obj.get("scientificName", found_name)
+                
+                await process.log(
+                    f"Found synonym '{found_name}' (ID: {taxon_id}), "
+                    f"using accepted name '{accepted_name}' (ID: {accepted_id})"
+                )
+                
+                return (accepted_id, accepted_name)
+        
+        await process.log(f"Found accepted name: {found_name} (ID: {taxon_id})")
         return (taxon_id, found_name)
 
     def _format_classification(self, taxonomy):
@@ -625,6 +829,144 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 {"data_source": "Catalogue of Life", "taxon_id": taxon_id, "total_children": total})
 
             await context.reply(reply)
+            
+    async def _handle_distribution(self, context, request, params):
+        async with context.begin_process(summary="Fetching distribution data") as process:
+            query = params.taxon_id.strip()
+
+            # Get taxon ID
+            if self._is_taxon_id(query):
+                taxon_id = query
+                scientific_name = None
+            else:
+                result = await self._search_for_taxon_id(process, query)
+                if not result:
+                    await context.reply(f"No match found for '{query}'. Please check the spelling.")
+                    return
+                taxon_id, scientific_name = result
+
+            # Fetch distribution data
+            url = f"{COL_BASE_URL}/dataset/{self.dataset_key}/taxon/{taxon_id}/distribution"
+            data = await self._make_api_request(process, url, expected_structure="list")
+
+            if not data:
+                display = scientific_name or f"taxon ID '{taxon_id}'"
+                await context.reply(f"No distribution data found for {display}.")
+                return
+
+            # Extract area names
+            areas = []
+            for item in data:
+                try:
+                    area_info = item.get("area", {})
+                    area_name = area_info.get("name", "")
+                    if area_name:
+                        areas.append(area_name)
+                except:
+                    continue
+
+            if not areas:
+                display = scientific_name or f"taxon ID '{taxon_id}'"
+                await context.reply(f"No distribution areas found for {display}.")
+                return
+
+            # Create short reply (manager-compliant)
+            display = scientific_name or f"taxon ID {taxon_id}"
+            reply = (
+                f"Found distribution data for {display} across {len(areas)} region(s). "
+                "See artifact for complete geographic distribution."
+            )
+
+            # Create artifact with URL only (no content)
+            await self._create_json_artifact(
+                process,
+                None,  # ← No data passed
+                f"Distribution data for {scientific_name or taxon_id} - {len(areas)} regions",
+                [url],  # ← Just the API URL
+                {
+                    "data_source": "Catalogue of Life",
+                    "taxon_id": taxon_id,
+                    "region_count": len(areas)
+                }
+            )
+
+            await context.reply(reply)
+            
+    async def _handle_references(self, context, request, params):
+        async with context.begin_process(summary="Fetching references") as process:
+            query = params.taxon_id.strip()
+
+            # Get taxon ID
+            if self._is_taxon_id(query):
+                taxon_id = query
+                scientific_name = None
+            else:
+                result = await self._search_for_taxon_id(process, query)
+                if not result:
+                    await context.reply(f"No match found for '{query}'. Please check the spelling.")
+                    return
+                taxon_id, scientific_name = result
+
+            # Fetch taxon info to get reference IDs
+            info_url = f"{COL_BASE_URL}/dataset/{self.dataset_key}/taxon/{taxon_id}/info"
+            info_data = await self._make_api_request(process, info_url, expected_structure="dict")
+
+            if not info_data:
+                display = scientific_name or f"taxon ID '{taxon_id}'"
+                await context.reply(f"Unable to retrieve information for {display}.")
+                return
+
+            # Extract reference IDs
+            usage = info_data.get("usage", {})
+            reference_ids = usage.get("referenceIds", [])
+
+            if not reference_ids:
+                display = scientific_name or f"taxon ID '{taxon_id}'"
+                await context.reply(f"No references found for {display}.")
+                return
+
+            await process.log(f"Found {len(reference_ids)} reference ID(s)")
+
+            # Fetch each reference (just to count successes)
+            references = []
+            reference_urls = []
+
+            for ref_id in reference_ids:
+                ref_url = f"{COL_BASE_URL}/dataset/{self.dataset_key}/reference/{ref_id}"
+                reference_urls.append(ref_url)
+
+                ref_data = await self._make_api_request(process, ref_url, expected_structure="dict")
+                if ref_data:
+                    references.append(ref_data)
+
+            if not references:
+                display = scientific_name or f"taxon ID '{taxon_id}'"
+                await context.reply(
+                    f"Found {len(reference_ids)} reference ID(s) for {display}, but could not retrieve them."
+                )
+                return
+
+            # Create short reply (manager-compliant - no citations shown)
+            display = scientific_name or f"taxon ID {taxon_id}"
+            reply = (
+                f"Found {len(references)} bibliographic reference(s) for {display}. "
+                "See artifact for complete reference data."
+            )
+
+            # Create artifact with all reference URLs (no content)
+            await self._create_json_artifact(
+                process,
+                None,  # ← No data passed
+                f"References for {scientific_name or taxon_id} - {len(references)} citations",
+                [info_url] + reference_urls,  # ← Info URL + all reference URLs
+                {
+                    "data_source": "Catalogue of Life",
+                    "taxon_id": taxon_id,
+                    "reference_count": len(references)
+                }
+            )
+
+            await context.reply(reply)
 
     # --- Main Router ---
 
@@ -639,6 +981,8 @@ class CatalogueOfLifeAgent(IChatBioAgent):
             "get_vernacular_names": self._handle_vernacular_names,
             "get_classification": self._handle_classification,
             "get_taxon_children": self._handle_taxon_children,
+            "get_distribution": self._handle_distribution,
+            "get_references": self._handle_references,
         }
 
         handler = handlers.get(entrypoint)
@@ -649,8 +993,7 @@ class CatalogueOfLifeAgent(IChatBioAgent):
                 logger.exception(f"Error in {entrypoint}: {e}")
                 await context.reply("An unexpected error occurred. Please try again.")
         else:
-            await context.reply(f"Unknown entrypoint '{entrypoint}'. Valid: search, get_taxon_details, get_synonyms, get_vernacular_names, get_classification, get_taxon_children")
-
+            await context.reply(f"Unknown entrypoint '{entrypoint}'. Valid: search, get_taxon_details, get_synonyms, get_vernacular_names, get_classification, get_taxon_children, get_distribution, get_references")
 
 # --- Server ---
 
