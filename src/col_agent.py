@@ -4,21 +4,26 @@ Catalogue of Life Agent for iChatBio Platform
 
 This agent provides access to the Catalogue of Life database through the ChecklistBank API.
 It enables biodiversity researchers and educators to query species information, taxonomic
-classifications, synonyms, and vernacular names.
+classifications, synonyms, vernacular names, distribution data, and bibliographic references.
 
 API Documentation: https://api.checklistbank.org
 Dataset: Catalogue of Life Latest Release (3LR)
 
 Author: Krishna Modi
-Version: 2.0.1 (stable rollback)
+Version: 3.0.0
 License: MIT
 
 Changelog:
-    2.0.1 - Stable rollback: all 6 entrypoints, original search behavior
-          - No experimental tautonym or common name fixes
-          - Known limitation: tautonyms (Rattus rattus) may return genus instead of species
-          - Known limitation: common names (lion, dog) not supported yet
-    2.0.0 - Initial release with search, get_taxon_details, get_synonyms, get_vernacular_names
+    3.0.0 - Feature release (March 31, 2026)
+          - Added get_distribution and get_references entrypoints
+          - Fixed tautonym matching bug (Rattus rattus, Bison bison now work correctly)
+          - Implemented PREFIX matching and synonym resolution
+    
+    2.0.1 - Stable rollback (March 15, 2026)
+          - All 6 entrypoints operational
+    
+    2.0.0 - Initial release (March 1, 2026)
+          - Core entrypoints: search, get_taxon_details, get_synonyms, get_vernacular_names
 """
 
 import os
