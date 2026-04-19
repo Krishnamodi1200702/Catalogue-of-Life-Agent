@@ -1,48 +1,44 @@
+# tests/conftest.py
+"""
+Pytest configuration - auto-starts agent server before tests.
+"""
+
 import pytest
-
-from ichatbio.agent_response import ResponseChannel, ResponseContext, ResponseMessage
-
-
-class InMemoryResponseChannel(ResponseChannel):
-    """
-    Useful for interacting with agents locally (e.g., unit tests, command line interfaces) instead of sending responses
-    over the network. The `message_buffer` is populated by running an agent.
-
-    Example:
-
-        messages = list()
-        channel = InMemoryResponseChannel(messages)
-        context = ResponseContext(channel)
-
-        # `messages` starts empty
-        agent = HelloWorldAgent()
-        await agent.run(context, "Hi", "hello", None)
-        # `messages` should now be populated
-
-        assert messages[1].text == "Hello world!"
-    """
-
-    def __init__(self, message_buffer: list):
-        self.message_buffer = message_buffer
-
-    async def submit(self, message: ResponseMessage, context_id: str):
-        print(f"Submitting message: {type(message).__name__}, Attributes: {vars(message)}")
-        self.message_buffer.append(message)
+import subprocess
+import time
+import sys
+from pathlib import Path
 
 
-TEST_CONTEXT_ID = "617727d1-4ce8-4902-884c-db786854b51c"
-
-
-@pytest.fixture(scope="function")
-def messages() -> list[ResponseMessage]:
-    """During unit tests, the agent's replies to iChatBio will be stored in this list"""
-    return list()
-
-
-@pytest.fixture(scope="function")
-def context(messages) -> ResponseContext:
-    """
-    A special test context which gathers agent response messages as they are generated. Messages that do not occur
-    within a process block are assigned the context_id ``"617727d1-4ce8-4902-884c-db786854b51c"``.
-    """
-    return ResponseContext(InMemoryResponseChannel(messages), TEST_CONTEXT_ID)
+@pytest.fixture(scope="session", autouse=True)
+def agent_server():
+    """Start agent server before tests, stop after."""
+    print("\n Starting COL agent server...")
+    
+    process = subprocess.Popen(
+        [
+            sys.executable, "-m", "uvicorn",
+            "src.langchain_col.agent:create_app",
+            "--factory",
+            "--host", "127.0.0.1",
+            "--port", "9999",
+            "--log-level", "error"  # ← Suppress startup logs
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=Path(__file__).parent.parent
+    )
+    
+    # Simple wait for server to start
+    time.sleep(3)
+    
+    print(" Server ready\n")
+    
+    yield
+    
+    print("\n Stopping server...")
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()

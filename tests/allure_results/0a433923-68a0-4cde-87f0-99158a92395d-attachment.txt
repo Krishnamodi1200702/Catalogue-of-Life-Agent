@@ -1,0 +1,4 @@
+
+ Starting COL agent server...
+ Server ready
+

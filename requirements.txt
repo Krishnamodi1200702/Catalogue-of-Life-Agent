@@ -7,3 +7,8 @@ pydantic
 requests
 sqlalchemy
 aiosqlite
+langchain
+langchain-openai
+langgraph
+pytest
+allure-pytest
