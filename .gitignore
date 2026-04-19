@@ -26,3 +26,5 @@ Thumbs.db
 
 build.env
 build/
+tests/allure_results/
+tests/reports/
