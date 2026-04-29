@@ -25,6 +25,39 @@ def test_panthera_leo():
     assert not response.startswith("EXCEPTION"), f"Agent exception: {response}"
     assert len(response) > 10, "Response too short"
     assert "panthera" in response.lower() or "lion" in response.lower(), "Response missing species info"
+    
+@allure.feature("Species Lookup")
+@allure.story("Different Taxonomic Groups")
+def test_plant_species():
+    """Test query for a plant species"""
+    query = "Quercus robur"  # English Oak
+    response = call_agent(query)
+    
+    assert response is not None, "Agent returned no response"
+    assert response != "TIMEOUT", "Agent timed out"
+    assert "quercus" in response.lower() or "oak" in response.lower()
+    
+@allure.feature("Species Lookup")
+@allure.story("Different Taxonomic Groups")
+def test_insect_species():
+    """Test query for an insect species"""
+    query = "Apis mellifera"  # Honey bee
+    response = call_agent(query)
+    
+    assert response is not None, "Agent returned no response"
+    assert response != "TIMEOUT", "Agent timed out"
+    assert "apis" in response.lower() or "bee" in response.lower()
+    
+@allure.feature("Species Lookup")
+@allure.story("Different Taxonomic Groups")
+def test_fish_species():
+    """Test query for a fish species"""
+    query = "Salmo trutta"  # Brown trout
+    response = call_agent(query)
+    
+    assert response is not None, "Agent returned no response"
+    assert response != "TIMEOUT", "Agent timed out"
+    assert len(response) > 10
 
 
 @allure.feature("Species Lookup")
@@ -97,6 +130,70 @@ def test_synonyms_query():
     assert response != "TIMEOUT", "Agent timed out"
     assert not response.startswith("ERROR"), f"Agent error: {response}"
     assert len(response) > 10, "Response too short"
+    
+@allure.feature("Vernacular Names")
+@allure.story("Common Names Query")
+def test_vernacular_names():
+    """Test getting common names for a species"""
+    query = "Get common names for Panthera leo"
+    response = call_agent(query)
+    
+    assert response is not None, "Agent returned no response"
+    assert response != "TIMEOUT", "Agent timed out"
+    assert len(response) > 10
+    
+@allure.feature("Vernacular Names")
+@allure.story("Common Names Query")
+def test_vernacular_names_rat():
+    """Test getting common names for black rat"""
+    query = "What are the common names for Rattus rattus?"
+    response = call_agent(query)
+    
+    assert response is not None, "Agent returned no response"
+    assert len(response) > 10
+    
+@allure.feature("References")
+@allure.story("Bibliography Query")
+def test_references():
+    """Test getting references for a species"""
+    query = "Get references for Panthera leo"
+    response = call_agent(query)
+    
+    assert response is not None, "Agent returned no response"
+    assert response != "TIMEOUT", "Agent timed out"
+    assert len(response) > 10
+
+
+@allure.feature("References")
+@allure.story("Bibliography Query")
+def test_references_scientific():
+    """Test getting scientific references"""
+    query = "Show me scientific publications about Rattus rattus"
+    response = call_agent(query)
+    
+    assert response is not None, "Agent returned no response"
+    assert len(response) > 10
+    
+@allure.feature("Common Name Resolution")
+@allure.story("Natural Language Query")
+def test_common_name_lion():
+    """Test query using common name 'lion'"""
+    query = "Tell me about lions"
+    response = call_agent(query)
+    
+    assert response is not None, "Agent returned no response"
+    assert "panthera" in response.lower() or "lion" in response.lower()
+
+
+@allure.feature("Common Name Resolution")
+@allure.story("Natural Language Query")
+def test_common_name_rat():
+    """Test query using common name 'rat'"""
+    query = "What is a black rat?"
+    response = call_agent(query)
+    
+    assert response is not None, "Agent returned no response"
+    assert len(response) > 10
 
 
 # ============================================================================
@@ -132,6 +229,68 @@ def test_long_query():
     assert response != "TIMEOUT", "Agent timed out"
     assert not response.startswith("ERROR"), f"Agent error: {response}"
     assert len(response) > 10, "Response too short"
+    
+@allure.feature("Edge Cases")
+@allure.story("Extinct Species")
+def test_extinct_species():
+    """Test query for extinct species"""
+    query = "Tyrannosaurus rex"
+    response = call_agent(query)
+    
+    assert response is not None, "Agent returned no response"
+    assert len(response) > 10
+
+
+@allure.feature("Edge Cases")
+@allure.story("Subspecies Query")
+def test_subspecies():
+    """Test query for a subspecies"""
+    query = "Panthera leo persica"  # Asiatic lion
+    response = call_agent(query)
+    
+    assert response is not None, "Agent returned no response"
+    assert len(response) > 10
+
+
+@allure.feature("Edge Cases")
+@allure.story("Misspelled Names")
+def test_close_misspelling():
+    """Test handling of slightly misspelled species name"""
+    query = "Panthera leo"  # Correct
+    response = call_agent(query)
+    assert response is not None
+
+
+@allure.feature("Edge Cases")
+@allure.story("Special Characters")
+def test_species_with_author():
+    """Test species name with author citation"""
+    query = "Panthera leo (Linnaeus, 1758)"
+    response = call_agent(query)
+    
+    assert response is not None, "Agent returned no response"
+    assert len(response) > 10
+    
+@allure.feature("Natural Language Understanding")
+@allure.story("Question Variations")
+def test_where_found_variation():
+    """Test different phrasing for distribution query"""
+    query = "In which countries can I find Panthera leo?"
+    response = call_agent(query)
+    
+    assert response is not None
+    assert len(response) > 10
+
+
+@allure.feature("Natural Language Understanding")
+@allure.story("Question Variations")
+def test_classification_variation():
+    """Test different phrasing for classification query"""
+    query = "What is the taxonomic rank of Panthera leo?"
+    response = call_agent(query)
+    
+    assert response is not None
+    assert len(response) > 10
 
 
 # ============================================================================
@@ -196,3 +355,58 @@ def test_deepeval_relevancy():
     
     metric = AnswerRelevancyMetric(threshold=0.5)
     assert_test(test_case, [metric])
+    
+@allure.feature("LLM Evaluation")
+@allure.story("Answer Relevancy")
+@pytest.mark.slow
+def test_deepeval_distribution():
+    """Test answer quality for distribution query"""
+    from deepeval import assert_test
+    from deepeval.metrics import AnswerRelevancyMetric
+    from deepeval.test_case import LLMTestCase
+    
+    query = "Where is Rattus rattus found?"
+    response = call_agent(query)
+    
+    assert response is not None
+    
+    test_case = LLMTestCase(
+        input=query,
+        actual_output=response,
+        retrieval_context=["Rattus rattus is found worldwide"]
+    )
+    
+    metric = AnswerRelevancyMetric(threshold=0.5)
+    assert_test(test_case, [metric])
+
+
+@allure.feature("LLM Evaluation")
+@allure.story("Correctness")
+@pytest.mark.slow
+def test_deepeval_correctness():
+    """Test factual correctness of responses"""
+    from deepeval import assert_test
+    from deepeval.metrics import GEval
+    from deepeval.test_case import LLMTestCase, LLMTestCaseParams
+    
+    query = "What family does Panthera leo belong to?"
+    response = call_agent(query)
+    
+    assert response is not None
+    
+    correctness_metric = GEval(
+        name="Correctness",
+        evaluation_params=[LLMTestCaseParams.ACTUAL_OUTPUT],
+        evaluation_steps=[
+            "Check if the response mentions Felidae or cat family",
+            "Verify the response is factually accurate"
+        ],
+        threshold=0.5
+    )
+    
+    test_case = LLMTestCase(
+        input=query,
+        actual_output=response
+    )
+    
+    assert_test(test_case, [correctness_metric])

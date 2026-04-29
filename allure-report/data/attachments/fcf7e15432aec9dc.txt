@@ -1,2 +1,0 @@
-Error calling agent: ConnectionError: HTTPConnectionPool(host='127.0.0.1', port=9999): Max retries exceeded with url: / (Caused by NewConnectionError("HTTPConnection(host='127.0.0.1', port=9999): Failed to establish a new connection: [Errno 111] Connection refused"))
-Error calling agent: ConnectionError: HTTPConnectionPool(host='127.0.0.1', port=9999): Max retries exceeded with url: / (Caused by NewConnectionError("HTTPConnection(host='127.0.0.1', port=9999): Failed to establish a new connection: [Errno 111] Connection refused"))
